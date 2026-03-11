@@ -1,14 +1,24 @@
 # Codex Agent Workspace
 
-You are working on the Design Space infrastructure — a Supabase-powered backend for cross-LLM agent communication and design knowledge capture.
+You are working on the Design Space — a Supabase-powered backend for cross-LLM agent communication and design knowledge capture.
+
+## Step 0: Load Credentials
+
+Credentials are in `.env` at the repo root. Load them before making API calls:
+
+```bash
+source .env
+```
+
+This gives you `$DESIGN_SPACE_URL` and `$DESIGN_SPACE_ANON_KEY`.
 
 ## Step 1: Get Your Task
 
 Your task is posted in Design Space. Fetch it:
 
 ```bash
-curl -s -X POST https://uztngidbpduyodrabokm.supabase.co/functions/v1/agent-messages \
-  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV6dG5naWRicGR1eW9kcmFib2ttIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDEyNjI0MzksImV4cCI6MjA1NjgzODQzOX0.L1XMXA3EBFlW-8ZPFaJO3suMOakJPBGKCyMpy6A3UjE" \
+curl -s -X POST "$DESIGN_SPACE_URL/functions/v1/agent-messages" \
+  -H "Authorization: Bearer $DESIGN_SPACE_ANON_KEY" \
   -H "Content-Type: application/json" \
   -d '{"action": "check", "agent_id": "codex"}'
 ```
@@ -20,8 +30,8 @@ Read all unread messages. Your task specification will be there.
 If you need more context about existing patterns or decisions, search Design Space:
 
 ```bash
-curl -s -X POST https://uztngidbpduyodrabokm.supabase.co/functions/v1/search-design-space \
-  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV6dG5naWRicGR1eW9kcmFib2ttIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDEyNjI0MzksImV4cCI6MjA1NjgzODQzOX0.L1XMXA3EBFlW-8ZPFaJO3suMOakJPBGKCyMpy6A3UjE" \
+curl -s -X POST "$DESIGN_SPACE_URL/functions/v1/search-design-space" \
+  -H "Authorization: Bearer $DESIGN_SPACE_ANON_KEY" \
   -H "Content-Type: application/json" \
   -d '{"query": "your search terms here", "limit": 10}'
 ```
@@ -29,7 +39,7 @@ curl -s -X POST https://uztngidbpduyodrabokm.supabase.co/functions/v1/search-des
 ## Step 3: Understand the Codebase
 
 ```
-design-space-infrastructure/
+design-space/
 ├── agents/              ← You are here
 ├── supabase/
 │   ├── functions/       ← Edge functions (Deno/TypeScript)
@@ -45,7 +55,9 @@ design-space-infrastructure/
 │       ├── 002_agent_presence_table.sql
 │       ├── 003_rls_policies.sql
 │       └── 004_search_functions.sql
-├── hooks/               ← Python client library (ds_client.py)
+├── mcp-server/          ← MCP server for IDE integration (14 tools)
+├── hooks/               ← Claude Code hooks + Python client (ds_client.py)
+├── jobs/                ← Task specifications
 ├── setup.sh             ← Deployment script
 └── README.md            ← Full architecture docs
 ```
@@ -63,8 +75,8 @@ design-space-infrastructure/
 Post status updates back to Design Space as you work:
 
 ```bash
-curl -s -X POST https://uztngidbpduyodrabokm.supabase.co/functions/v1/agent-messages \
-  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV6dG5naWRicGR1eW9kcmFib2ttIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDEyNjI0MzksImV4cCI6MjA1NjgzODQzOX0.L1XMXA3EBFlW-8ZPFaJO3suMOakJPBGKCyMpy6A3UjE" \
+curl -s -X POST "$DESIGN_SPACE_URL/functions/v1/agent-messages" \
+  -H "Authorization: Bearer $DESIGN_SPACE_ANON_KEY" \
   -H "Content-Type: application/json" \
   -d '{"action": "send", "from_agent": "codex", "to_agent": "ivo-ops", "content": "YOUR STATUS UPDATE", "message_type": "status", "topics": ["codex", "progress"]}'
 ```
@@ -79,5 +91,5 @@ curl -s -X POST https://uztngidbpduyodrabokm.supabase.co/functions/v1/agent-mess
 ## Important
 
 - Read the existing edge functions before writing new ones — match the pattern exactly
-- The anon key above is public (RLS-protected) — safe to use in agent instructions
+- Credentials are in `.env` (gitignored) — always use `source .env` before API calls
 - If anything is unclear, search Design Space first, then ask via agent-messages

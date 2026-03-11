@@ -2,7 +2,7 @@
 
 **Commissioner:** Mårten Angner (Whiteport)
 **Target:** Any Codex agent
-**Repo:** `whiteport-collective/design-space-infrastructure`
+**Repo:** `whiteport-collective/design-space`
 **Priority:** Normal
 
 ---
@@ -28,8 +28,8 @@ Build the equivalent system for **Codex agents**. Codex runs in a sandboxed clou
 
 All interaction is via HTTP POST to Supabase Edge Functions. Zero dependencies needed.
 
-**Base URL:** `https://uztngidbpduyodrabokm.supabase.co/functions/v1/`
-**Auth:** `Authorization: Bearer <anon-key>` (see `hooks/ds_client.py` for the key)
+**Base URL:** See `DESIGN_SPACE_URL` in `.env` at repo root
+**Auth:** `Authorization: Bearer <DESIGN_SPACE_ANON_KEY>` (see `.env` at repo root)
 
 ### Endpoints You Need
 
