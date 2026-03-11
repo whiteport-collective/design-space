@@ -1,4 +1,4 @@
-// agent-messages: Cross-LLM, cross-IDE agent communication + job board
+// agent-messages: Cross-LLM, cross-IDE agent communication + work orders
 // POST { action: "send" | "check" | "respond" | "register" | "who-online" | "mark-read" | "thread"
 //                | "post-task" | "claim-task" | "list-tasks" | "update-task" }
 // Messages stored in design_space table (category = "agent_message" | "task") — every entry is searchable knowledge
@@ -128,7 +128,7 @@ serve(async (req) => {
         (m: any) => m.metadata?.from_agent !== agent_id
       );
 
-      // Fetch tasks assigned to this agent or unclaimed on the job board
+      // Fetch work orders assigned to this agent or unclaimed
       const { data: tasks, error: taskError } = await supabase
         .from("design_space")
         .select("*")
