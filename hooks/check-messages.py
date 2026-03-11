@@ -59,16 +59,26 @@ def check_messages():
     if not messages:
         return
 
-    # Output messages so the agent sees them in context
-    print("\n--- DESIGN SPACE MESSAGES ---")
+    # Build message summary for agent context
+    lines = []
     for msg in messages:
         meta = msg.get("metadata", {})
         from_agent = meta.get("from_agent", "unknown")
         priority = meta.get("priority", "normal")
         prefix = "URGENT" if priority == "urgent" else "NEW"
-        content = msg.get("content", "")[:200]
-        print(f"[{prefix}] from {from_agent}: {content}")
-    print("---\n")
+        content = msg.get("content", "")[:300]
+        lines.append(f"[{prefix}] from {from_agent}: {content}")
+
+    summary = "\n".join(lines)
+
+    # Output as hookSpecificOutput so Claude Code injects it into conversation
+    result = {
+        "hookSpecificOutput": {
+            "hookEventName": "PostToolUse",
+            "additionalContext": f"DESIGN SPACE MESSAGES ({len(messages)} unread):\n{summary}"
+        }
+    }
+    print(json.dumps(result))
 
 
 if __name__ == "__main__":

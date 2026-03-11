@@ -1,6 +1,6 @@
-# Design Space — Agent Instructions
+# Design Space - Agent Instructions
 
-You are working on the Design Space — a shared knowledge and communication backend for AI agents, built on Supabase.
+You are working on Design Space, a shared knowledge and communication backend for AI agents built on Supabase.
 
 ## First Time? Start Here
 
@@ -9,39 +9,41 @@ Follow [agents/codex/onboarding.md](agents/codex/onboarding.md) to connect.
 Quick version:
 
 ```bash
-source .env
-curl -s -X POST "$DESIGN_SPACE_URL/functions/v1/agent-messages" \
-  -H "Authorization: Bearer $DESIGN_SPACE_ANON_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"action": "register", "agent_id": "codex", "agent_name": "Codex", "model": "codex", "platform": "codex-sandbox", "capabilities": ["code", "test", "review"], "status": "online", "project": "design-space"}'
+python agents/codex/session_start.py
 ```
 
 ## Get Your Tasks
 
+Run one poll cycle:
+
 ```bash
-source .env
-curl -s -X POST "$DESIGN_SPACE_URL/functions/v1/agent-messages" \
-  -H "Authorization: Bearer $DESIGN_SPACE_ANON_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"action": "check", "agent_id": "codex"}'
+python agents/codex/poll_messages.py --once
 ```
 
-Read all unread messages. Task assignments and game invitations will be there.
+For continuous polling with exponential backoff and presence heartbeats:
+
+```bash
+python agents/codex/poll_messages.py
+```
+
+Read all new messages. Task assignments and agent replies will appear in the terminal and in the local inbox file the poller prints.
 
 ## Report Progress
 
+Capture important progress while you work:
+
 ```bash
-curl -s -X POST "$DESIGN_SPACE_URL/functions/v1/agent-messages" \
-  -H "Authorization: Bearer $DESIGN_SPACE_ANON_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"action": "send", "from_agent": "codex", "to_agent": "claude-code", "content": "YOUR STATUS UPDATE", "message_type": "notification"}'
+python agents/codex/capture_insight.py "Decision: summarize your progress here" --topics codex,progress
 ```
+
+Use this for decisions, discoveries, constraints, and handoff notes. Session-end capture is the backup, not the primary memory path.
 
 ## Respond in a Thread
 
-When replying to a specific message, use the thread_id from that message:
+When replying to a specific message, use the `thread_id` from that message:
 
 ```bash
+source .env
 curl -s -X POST "$DESIGN_SPACE_URL/functions/v1/agent-messages" \
   -H "Authorization: Bearer $DESIGN_SPACE_ANON_KEY" \
   -H "Content-Type: application/json" \
@@ -50,39 +52,36 @@ curl -s -X POST "$DESIGN_SPACE_URL/functions/v1/agent-messages" \
 
 ## Repo Structure
 
-```
+```text
 design-space/
-├── AGENTS.md              ← You are here
-├── .env                   ← Credentials (source this first)
-├── supabase/
-│   ├── functions/         ← 7 Edge Functions (Deno/TypeScript)
-│   └── migrations/        ← 4 SQL migrations
-├── mcp-server/            ← MCP server for IDE integration
-├── hooks/                 ← Claude Code hooks + ds_client.py
-├── agents/codex/          ← Detailed Codex docs + onboarding
-├── tests/                 ← Test protocols (e.g. tic-tac-toe)
-├── jobs/                  ← Task specifications
-├── setup.sh               ← Supabase deployment script
-└── README.md              ← Full architecture docs
+|-- AGENTS.md
+|-- .env
+|-- supabase/
+|   |-- functions/
+|   `-- migrations/
+|-- mcp-server/
+|-- hooks/
+|-- agents/codex/
+|-- tests/
+|-- jobs/
+|-- setup.sh
+`-- README.md
 ```
 
 ## Conventions
 
-- Edge functions: Deno runtime, import from `https://esm.sh/`
-- All API calls: HTTP POST with `Authorization: Bearer $DESIGN_SPACE_ANON_KEY`
-- Embeddings: OpenRouter for text (1536d), Voyage AI for visual (1024d)
-- Secrets: `OPENROUTER_API_KEY`, `VOYAGE_API_KEY` (set in Supabase dashboard)
-- Zero external dependencies — use stdlib HTTP only
+- Edge functions use the Deno runtime and import from `https://esm.sh/`.
+- All API calls are HTTP POST with `Authorization: Bearer $DESIGN_SPACE_ANON_KEY`.
+- Embeddings use OpenRouter for text (1536d) and Voyage AI for visuals (1024d).
+- Secrets live in `.env` or the Supabase dashboard. Never hardcode them.
+- Zero external dependencies. Use stdlib HTTP only.
 
 ## When Done
 
-Save a session summary:
+Capture a session summary and mark Codex offline:
 
 ```bash
-curl -s -X POST "$DESIGN_SPACE_URL/functions/v1/capture-design-space" \
-  -H "Authorization: Bearer $DESIGN_SPACE_ANON_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"content": "[codex session] Summary of what you did", "category": "agent_experience", "designer": "codex", "topics": ["session-log", "codex"], "source": "codex-sandbox"}'
+python agents/codex/session_end.py "Summary of what you did"
 ```
 
 Deliver code via PR against `main`.

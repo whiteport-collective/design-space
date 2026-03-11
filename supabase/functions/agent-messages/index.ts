@@ -237,6 +237,7 @@ serve(async (req) => {
       let query = supabase
         .from("agent_presence")
         .select("*")
+        .eq("status", "online")
         .gte("last_heartbeat", cutoff);
 
       if (project) {

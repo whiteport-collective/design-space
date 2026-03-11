@@ -1,95 +1,81 @@
 # Codex Agent Workspace
 
-You are working on the Design Space — a Supabase-powered backend for cross-LLM agent communication and design knowledge capture.
+You are working on Design Space, a Supabase-powered backend for cross-LLM agent communication and design knowledge capture.
 
-## Step 0: Load Credentials
+## Step 0: Use the Codex Scripts
 
-Credentials are in `.env` at the repo root. Load them before making API calls:
+The Codex workflow lives in four stdlib-only Python scripts:
 
 ```bash
-source .env
+python agents/codex/session_start.py
+python agents/codex/poll_messages.py --once
+python agents/codex/capture_insight.py "Decision or discovery"
+python agents/codex/session_end.py "Session summary"
 ```
 
-This gives you `$DESIGN_SPACE_URL` and `$DESIGN_SPACE_ANON_KEY`.
+They load `.env` automatically from the repo root. Never hardcode credentials.
 
 ## Step 1: Get Your Task
 
-Your task is posted in Design Space. Fetch it:
+Your task is posted in Design Space. Use the poller:
 
 ```bash
-curl -s -X POST "$DESIGN_SPACE_URL/functions/v1/agent-messages" \
-  -H "Authorization: Bearer $DESIGN_SPACE_ANON_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"action": "check", "agent_id": "codex"}'
+python agents/codex/poll_messages.py --once
 ```
 
-Read all unread messages. Your task specification will be there.
+Read all new messages. Task specifications and thread replies will be printed and written to the local inbox file.
 
 ## Step 2: Search for Context
 
-If you need more context about existing patterns or decisions, search Design Space:
-
-```bash
-curl -s -X POST "$DESIGN_SPACE_URL/functions/v1/search-design-space" \
-  -H "Authorization: Bearer $DESIGN_SPACE_ANON_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"query": "your search terms here", "limit": 10}'
-```
+If you need more context about existing patterns or decisions, use the shared client from Python or hit the search endpoint directly. Keep the workflow stdlib-only and repo-local.
 
 ## Step 3: Understand the Codebase
 
-```
+```text
 design-space/
-├── agents/              ← You are here
-├── supabase/
-│   ├── functions/       ← Edge functions (Deno/TypeScript)
-│   │   ├── agent-messages/index.ts
-│   │   ├── capture-design-space/index.ts
-│   │   ├── capture-feedback-pair/index.ts
-│   │   ├── capture-visual/index.ts
-│   │   ├── search-design-space/index.ts
-│   │   ├── search-preference-patterns/index.ts
-│   │   └── search-visual-similarity/index.ts
-│   └── migrations/      ← SQL migrations (numbered, run in order)
-│       ├── 001_design_space_table.sql
-│       ├── 002_agent_presence_table.sql
-│       ├── 003_rls_policies.sql
-│       └── 004_search_functions.sql
-├── mcp-server/          ← MCP server for IDE integration (14 tools)
-├── hooks/               ← Claude Code hooks + Python client (ds_client.py)
-├── jobs/                ← Task specifications
-├── setup.sh             ← Deployment script
-└── README.md            ← Full architecture docs
+|-- agents/
+|-- supabase/
+|   |-- functions/
+|   `-- migrations/
+|-- mcp-server/
+|-- hooks/
+|-- jobs/
+|-- setup.sh
+`-- README.md
 ```
 
 ### Conventions
 
-- Edge functions use **Deno runtime** — import from `https://esm.sh/`
-- All functions share the same CORS headers and auth pattern — read any existing function as reference
-- SQL migrations are numbered sequentially — next available: `005_*.sql`
-- Embeddings: OpenRouter for text (1536d), Voyage AI for visual (1024d)
-- Environment secrets: `OPENROUTER_API_KEY`, `VOYAGE_API_KEY` (set in Supabase dashboard)
+- Edge functions use the Deno runtime and import from `https://esm.sh/`.
+- Match the existing auth and payload patterns before changing APIs.
+- SQL migrations are numbered sequentially.
+- Embeddings use OpenRouter for text (1536d) and Voyage AI for visuals (1024d).
 
 ## Step 4: Report Progress
 
-Post status updates back to Design Space as you work:
+Capture important progress while you work:
 
 ```bash
-curl -s -X POST "$DESIGN_SPACE_URL/functions/v1/agent-messages" \
-  -H "Authorization: Bearer $DESIGN_SPACE_ANON_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"action": "send", "from_agent": "codex", "to_agent": "ivo-ops", "content": "YOUR STATUS UPDATE", "message_type": "status", "topics": ["codex", "progress"]}'
+python agents/codex/capture_insight.py \
+  "Decision: chose Python stdlib scripts for Codex Design Space integration" \
+  --topics codex,progress
 ```
+
+Use this for decisions, discoveries, constraints, and handoff notes as they happen. Session-end capture is the backup, not the primary memory path.
 
 ## Step 5: Deliver
 
-1. Create a feature branch: `codex/<short-description>`
-2. Make your changes
-3. Open a PR against `main`
-4. Post completion message to Design Space (same curl as Step 4, with message_type: "completion")
+1. Create a feature branch: `codex/<short-description>`.
+2. Make your changes.
+3. Open a PR against `main`.
+4. Capture the session summary and mark Codex offline:
+
+```bash
+python agents/codex/session_end.py "What shipped, what remains, and any risks."
+```
 
 ## Important
 
-- Read the existing edge functions before writing new ones — match the pattern exactly
-- Credentials are in `.env` (gitignored) — always use `source .env` before API calls
-- If anything is unclear, search Design Space first, then ask via agent-messages
+- Read the existing edge functions before writing new ones and match the pattern.
+- Credentials are in `.env` (gitignored). Never hardcode them in scripts or docs.
+- If anything is unclear, search Design Space first, then ask via `agent-messages`.

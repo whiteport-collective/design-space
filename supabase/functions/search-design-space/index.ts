@@ -41,7 +41,7 @@ serve(async (req) => {
   try {
     const {
       query, category, project, designer, topics, components,
-      limit = 10, threshold = 0.7,
+      limit = 10, threshold = 0.3,
     } = await req.json();
 
     if (!query) {
