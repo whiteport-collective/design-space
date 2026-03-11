@@ -1,6 +1,7 @@
-// agent-messages: Cross-LLM, cross-IDE agent communication
-// POST { action: "send" | "check" | "respond" | "register" | "who-online" | "mark-read" | "thread" }
-// Messages stored in design_space table (category = "agent_message") — every message is searchable knowledge
+// agent-messages: Cross-LLM, cross-IDE agent communication + job board
+// POST { action: "send" | "check" | "respond" | "register" | "who-online" | "mark-read" | "thread"
+//                | "post-task" | "claim-task" | "list-tasks" | "update-task" }
+// Messages stored in design_space table (category = "agent_message" | "task") — every entry is searchable knowledge
 
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -10,25 +11,29 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-async function getEmbedding(text: string): Promise<number[]> {
+async function getEmbedding(text: string): Promise<number[] | null> {
   const openRouterKey = Deno.env.get("OPENROUTER_API_KEY");
-  if (!openRouterKey) throw new Error("OPENROUTER_API_KEY not set");
+  if (!openRouterKey) return null; // Embeddings are optional — messages/tasks work without them
 
-  const response = await fetch("https://openrouter.ai/api/v1/embeddings", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${openRouterKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: "openai/text-embedding-3-small",
-      input: text,
-    }),
-  });
+  try {
+    const response = await fetch("https://openrouter.ai/api/v1/embeddings", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${openRouterKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "openai/text-embedding-3-small",
+        input: text,
+      }),
+    });
 
-  if (!response.ok) throw new Error(`Embedding error: ${response.status}`);
-  const data = await response.json();
-  return data.data[0].embedding;
+    if (!response.ok) return null;
+    const data = await response.json();
+    return data.data[0].embedding;
+  } catch {
+    return null; // Don't block messaging if embedding fails
+  }
 }
 
 serve(async (req) => {
@@ -96,7 +101,8 @@ serve(async (req) => {
         return jsonResponse({ error: "agent_id is required" }, 400);
       }
 
-      let query = supabase
+      // Fetch messages
+      let msgQuery = supabase
         .from("design_space")
         .select("*")
         .eq("category", "agent_message")
@@ -104,29 +110,41 @@ serve(async (req) => {
         .limit(limit);
 
       if (project) {
-        query = query.eq("project", project);
+        msgQuery = msgQuery.eq("project", project);
       }
 
-      // Messages addressed to this agent OR broadcast (no to_agent)
       if (include_broadcast) {
-        query = query.or(
+        msgQuery = msgQuery.or(
           `metadata->>to_agent.eq.${agent_id},metadata->>to_agent.is.null`
         );
       } else {
-        query = query.eq("metadata->>to_agent", agent_id);
+        msgQuery = msgQuery.eq("metadata->>to_agent", agent_id);
       }
 
-      const { data: messages, error } = await query;
-      if (error) throw error;
+      const { data: messages, error: msgError } = await msgQuery;
+      if (msgError) throw msgError;
 
-      // Filter out own messages
       const unread = (messages || []).filter(
         (m: any) => m.metadata?.from_agent !== agent_id
       );
 
+      // Fetch tasks assigned to this agent or unclaimed on the job board
+      const { data: tasks, error: taskError } = await supabase
+        .from("design_space")
+        .select("*")
+        .eq("category", "task")
+        .in("metadata->>status", ["ready", "in-progress"])
+        .or(`metadata->>assignee.eq.${agent_id},metadata->>assignee.is.null`)
+        .order("created_at", { ascending: false })
+        .limit(10);
+
+      if (taskError) throw taskError;
+
       return jsonResponse({
         messages: unread,
         unread_count: unread.length,
+        tasks: tasks || [],
+        task_count: (tasks || []).length,
       });
     }
 
@@ -311,7 +329,151 @@ serve(async (req) => {
       });
     }
 
-    return jsonResponse({ error: `Unknown action: ${action}` }, 400);
+    // ==================== POST-TASK ====================
+    if (action === "post-task") {
+      const {
+        from_agent, project, title, content, assignee,
+        priority = "normal", topics = [], components = [],
+      } = body;
+
+      if (!content || !from_agent || !title) {
+        return jsonResponse({ error: "content, from_agent, and title are required" }, 400);
+      }
+
+      const thread_id = crypto.randomUUID();
+      const embedding = await getEmbedding(`${title}\n${content}`);
+
+      const { data: task, error } = await supabase
+        .from("design_space")
+        .insert({
+          content,
+          category: "task",
+          project,
+          topics,
+          components,
+          embedding,
+          thread_id,
+          metadata: {
+            title,
+            from_agent,
+            assignee: assignee || null,
+            priority,
+            status: "ready",
+            created_at: new Date().toISOString(),
+            claimed_at: null,
+            completed_at: null,
+          },
+        })
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      return jsonResponse({ task, thread_id });
+    }
+
+    // ==================== CLAIM-TASK ====================
+    if (action === "claim-task") {
+      const { task_id, agent_id } = body;
+
+      if (!task_id || !agent_id) {
+        return jsonResponse({ error: "task_id and agent_id are required" }, 400);
+      }
+
+      const { data: existing } = await supabase
+        .from("design_space")
+        .select("metadata")
+        .eq("id", task_id)
+        .eq("category", "task")
+        .single();
+
+      if (!existing) {
+        return jsonResponse({ error: "Task not found" }, 404);
+      }
+
+      if (existing.metadata?.status !== "ready") {
+        return jsonResponse({ error: `Task is ${existing.metadata?.status}, not claimable` }, 409);
+      }
+
+      const { data: task, error } = await supabase
+        .from("design_space")
+        .update({
+          metadata: {
+            ...existing.metadata,
+            assignee: agent_id,
+            status: "in-progress",
+            claimed_at: new Date().toISOString(),
+          },
+        })
+        .eq("id", task_id)
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      return jsonResponse({ task });
+    }
+
+    // ==================== LIST-TASKS ====================
+    if (action === "list-tasks") {
+      const { project, assignee, status, limit = 20 } = body;
+
+      let query = supabase
+        .from("design_space")
+        .select("*")
+        .eq("category", "task")
+        .order("created_at", { ascending: false })
+        .limit(limit);
+
+      if (project) query = query.eq("project", project);
+      if (status) query = query.eq("metadata->>status", status);
+      if (assignee) query = query.eq("metadata->>assignee", assignee);
+
+      const { data: tasks, error } = await query;
+      if (error) throw error;
+
+      return jsonResponse({ tasks: tasks || [], count: (tasks || []).length });
+    }
+
+    // ==================== UPDATE-TASK ====================
+    if (action === "update-task") {
+      const { task_id, agent_id, status: newStatus, result } = body;
+
+      if (!task_id || !agent_id) {
+        return jsonResponse({ error: "task_id and agent_id are required" }, 400);
+      }
+
+      const { data: existing } = await supabase
+        .from("design_space")
+        .select("metadata")
+        .eq("id", task_id)
+        .eq("category", "task")
+        .single();
+
+      if (!existing) {
+        return jsonResponse({ error: "Task not found" }, 404);
+      }
+
+      const updates: any = { ...existing.metadata };
+      if (newStatus) {
+        updates.status = newStatus;
+        if (newStatus === "done") updates.completed_at = new Date().toISOString();
+      }
+      if (result) updates.result = result;
+
+      const { data: task, error } = await supabase
+        .from("design_space")
+        .update({ metadata: updates })
+        .eq("id", task_id)
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      return jsonResponse({ task });
+    }
+
+    return jsonResponse({ error: `Invalid action. Use: send, check, respond, mark-read, thread, register, who-online, post-task, claim-task, list-tasks, update-task` }, 400);
   } catch (err) {
     return jsonResponse({ error: err.message }, 500);
   }
