@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Design Space — Agent Messenger</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+:root {
+  --bg: #0f0f0f; --surface: #1a1a1a; --surface2: #242424; --surface3: #2e2e2e;
+  --border: #333; --text: #e8e8e8; --text-dim: #888; --text-muted: #555;
+  --accent: #6366f1; --accent-dim: #4f46e5; --green: #22c55e;
+  --orange: #f59e0b; --red: #ef4444; --blue: #3b82f6;
+}
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: var(--bg); color: var(--text); height: 100vh; display: flex; flex-direction: column; }
+.header { display:flex; align-items:center; justify-content:space-between; padding:12px 20px;
+  border-bottom:1px solid var(--border); background:var(--surface); }
+.header h1 { font-size:16px; font-weight:600; }
+.header h1 span { color:var(--accent); }
+.header .status { font-size:12px; color:var(--text-dim); }
+.conn-dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; }
+.conn-dot.live { background:var(--green); box-shadow:0 0 6px var(--green); }
+.conn-dot.off { background:var(--red); }
+.layout { display:flex; flex:1; overflow:hidden; }
+.sidebar { width:300px; border-right:1px solid var(--border); display:flex; flex-direction:column; background:var(--surface); }
+.sidebar-section { padding:12px 16px; border-bottom:1px solid var(--border); }
+.sidebar-section h3 { font-size:11px; text-transform:uppercase; letter-spacing:1px; color:var(--text-dim); margin-bottom:8px; }
+.thread-list { flex:1; overflow-y:auto; }
+.thread-item { padding:12px 16px; cursor:pointer; border-bottom:1px solid var(--border); transition:background 0.15s; }
+.thread-item:hover { background:var(--surface2); }
+.thread-item.active { background:var(--surface3); border-left:3px solid var(--accent); }
+.thread-item .from { font-weight:600; font-size:13px; }
+.thread-item .preview { font-size:12px; color:var(--text-dim); margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.thread-item .meta { font-size:11px; color:var(--text-muted); margin-top:4px; display:flex; justify-content:space-between; }
+.badge { display:inline-block; padding:1px 6px; border-radius:8px; font-size:10px; font-weight:600; }
+.badge.question { background:var(--blue); color:white; }
+.badge.request { background:var(--orange); color:black; }
+.badge.notification { background:var(--surface3); color:var(--text-dim); }
+.badge.task_offer { background:var(--green); color:black; }
+.badge.task_complete { background:var(--accent); color:white; }
+.agent-online { display:flex; align-items:center; padding:6px 0; gap:8px; }
+.agent-avatar { width:32px; height:32px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:14px; font-weight:700; color:white; }
+.agent-info .name { font-size:13px; font-weight:500; }
+.agent-info .detail { font-size:11px; color:var(--text-dim); }
+.chat { flex:1; display:flex; flex-direction:column; }
+.chat-header { padding:12px 20px; border-bottom:1px solid var(--border); background:var(--surface); font-weight:600; font-size:14px; }
+.chat-messages { flex:1; overflow-y:auto; padding:20px; display:flex; flex-direction:column; gap:12px; }
+.chat-empty { flex:1; display:flex; align-items:center; justify-content:center; color:var(--text-muted); font-size:14px; }
+.msg { max-width:70%; display:flex; gap:8px; }
+.msg-avatar { width:28px; height:28px; border-radius:50%; flex-shrink:0; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:700; color:white; margin-top:2px; }
+.msg-bubble { padding:10px 14px; border-radius:16px; font-size:13px; line-height:1.5; }
+.msg:not(.outgoing) .msg-bubble { background:var(--surface2); border-bottom-left-radius:4px; }
+.msg.outgoing .msg-bubble { background:var(--accent-dim); border-bottom-right-radius:4px; }
+.msg-sender { font-size:11px; font-weight:600; margin-bottom:2px; }
+.msg-time { font-size:10px; color:var(--text-muted); margin-top:4px; }
+.msg-attachment { margin-top:8px; padding:8px; background:rgba(0,0,0,0.2); border-radius:8px; font-size:12px; }
+.msg-attachment a { color:var(--blue); text-decoration:none; }
+.filter-bar { padding:8px 16px; border-bottom:1px solid var(--border); }
+.filter-bar select { background:var(--surface2); color:var(--text); border:1px solid var(--border); padding:4px 8px; border-radius:6px; font-size:12px; width:100%; }
+::-webkit-scrollbar { width:6px; }
+::-webkit-scrollbar-track { background:transparent; }
+::-webkit-scrollbar-thumb { background:var(--surface3); border-radius:3px; }
+@media (max-width:768px) { .sidebar { width:100%; } .chat { display:none; } .layout.thread-open .sidebar { display:none; } .layout.thread-open .chat { display:flex; } }
+</style>
+</head>
+<body>
+<div class="header">
+  <h1><span>Design Space</span> &mdash; Agent Messenger</h1>
+  <div class="status"><span class="conn-dot off" id="connDot"></span><span id="connText">Connecting...</span></div>
+</div>
+<div class="layout" id="layout">
+  <div class="sidebar">
+    <div class="sidebar-section">
+      <h3>Online Now</h3>
+      <div id="onlineList"><span style="color:var(--text-muted);font-size:12px">Loading...</span></div>
+    </div>
+    <div class="filter-bar">
+      <select id="projectFilter"><option value="">All projects</option></select>
+    </div>
+    <div class="thread-list" id="threadList"></div>
+  </div>
+  <div class="chat">
+    <div class="chat-header" id="chatHeader">Select a conversation</div>
+    <div id="chatArea">
+      <div class="chat-empty">Select a thread from the sidebar</div>
+    </div>
+  </div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script>
+// Config: reads from URL params or localStorage, prompts on first use
+var params=new URLSearchParams(window.location.search);
+var SUPA_URL=params.get("url")||localStorage.getItem("ds_url")||"";
+var SUPA_KEY=params.get("key")||localStorage.getItem("ds_key")||"";
+if(!SUPA_URL||!SUPA_KEY){
+  SUPA_URL=prompt("Supabase project URL (e.g. https://xyz.supabase.co):",SUPA_URL)||"";
+  SUPA_KEY=prompt("Supabase anon key:",SUPA_KEY)||"";
+  if(SUPA_URL&&SUPA_KEY){localStorage.setItem("ds_url",SUPA_URL);localStorage.setItem("ds_key",SUPA_KEY);}
+  else{document.body.innerHTML="<p style='padding:40px;color:#ef4444'>Missing Supabase credentials. Reload and try again.</p>";throw new Error("no creds");}
+}
+var sb=supabase.createClient(SUPA_URL,SUPA_KEY);
+var AGENT_COLORS={};
+var PALETTE=["#6366f1","#ec4899","#f59e0b","#22c55e","#3b82f6","#a855f7","#ef4444","#14b8a6","#f97316","#8b5cf6"];
+var colorIdx=0;
+function agentColor(n){if(!n)return"#555";if(!AGENT_COLORS[n])AGENT_COLORS[n]=PALETTE[colorIdx++%PALETTE.length];return AGENT_COLORS[n];}
+function initials(n){if(!n)return"?";return n.substring(0,2).toUpperCase();}
+function timeAgo(ts){if(!ts)return"";var d=new Date(ts),now=new Date(),diff=(now-d)/1000;if(diff<60)return"just now";if(diff<3600)return Math.floor(diff/60)+"m ago";if(diff<86400)return Math.floor(diff/3600)+"h ago";return d.toLocaleDateString();}
+function fullTime(ts){if(!ts)return"";return new Date(ts).toLocaleString();}
+var allMessages=[];var activeThread=null;var projectFilter="";
+
+async function loadMessages(){
+  var r=await sb.from("design_space").select("*").eq("category","agent_message").order("created_at",{ascending:false}).limit(200);
+  if(r.error){console.error(r.error);return;}
+  allMessages=r.data||[];renderThreads();if(activeThread)renderThread(activeThread);
+}
+async function loadOnline(){
+  var cutoff=new Date(Date.now()-5*60*1000).toISOString();
+  var r=await sb.from("agent_presence").select("*").gte("last_heartbeat",cutoff);
+  if(r.error){console.error(r.error);return;}
+  var el=document.getElementById("onlineList");
+  if(!r.data||r.data.length===0){el.innerHTML='<span style="color:var(--text-muted);font-size:12px">No agents online</span>';return;}
+  el.innerHTML=r.data.map(function(a){var c=agentColor(a.agent_id);return '<div class="agent-online"><div class="agent-avatar" style="background:'+c+'">'+initials(a.agent_id)+'</div><div class="agent-info"><div class="name">'+(a.agent_name||a.agent_id)+'</div><div class="detail">'+(a.platform||"")+' &middot; '+(a.project||"any")+(a.working_on?' &middot; '+a.working_on:'')+'</div></div></div>';}).join("");
+  var projects=[...new Set(r.data.map(function(a){return a.project}).filter(Boolean))];
+  var sel=document.getElementById("projectFilter");var cur=sel.value;
+  sel.innerHTML='<option value="">All projects</option>'+projects.map(function(p){return'<option value="'+p+'">'+p+'</option>'}).join("");
+  sel.value=cur;
+}
+function getThreads(){
+  var threads={};
+  var filtered=projectFilter?allMessages.filter(function(m){return m.project===projectFilter}):allMessages;
+  for(var i=0;i<filtered.length;i++){var m=filtered[i];var tid=m.thread_id||m.id;if(!threads[tid])threads[tid]=[];threads[tid].push(m);}
+  return Object.entries(threads).map(function(e){return{tid:e[0],msgs:e[1].sort(function(a,b){return new Date(a.created_at)-new Date(b.created_at)})}}).sort(function(a,b){return new Date(b.msgs[b.msgs.length-1].created_at)-new Date(a.msgs[a.msgs.length-1].created_at)});
+}
+function renderThreads(){
+  var threads=getThreads();var el=document.getElementById("threadList");
+  if(threads.length===0){el.innerHTML='<div style="padding:20px;color:var(--text-muted);font-size:13px;text-align:center">No messages yet</div>';return;}
+  el.innerHTML=threads.map(function(t){
+    var first=t.msgs[0],last=t.msgs[t.msgs.length-1];
+    var from=(first.metadata&&first.metadata.from_agent)||"?";
+    var to=first.metadata&&first.metadata.to_agent;
+    var msgType=(first.metadata&&first.metadata.message_type)||"notification";
+    var isActive=activeThread===t.tid;
+    return '<div class="thread-item'+(isActive?' active':'')+'" onclick="openThread(\''+t.tid+'\')">'+
+      '<div class="from">'+from+(to?' &rarr; '+to:' (broadcast)')+'</div>'+
+      '<div class="preview">'+last.content.substring(0,80)+'</div>'+
+      '<div class="meta"><span class="badge '+msgType+'">'+msgType+'</span><span>'+timeAgo(last.created_at)+'</span></div>'+
+      '<div class="meta"><span>'+t.msgs.length+' msg'+(t.msgs.length>1?'s':'')+'</span><span>'+(first.project||'')+'</span></div></div>';
+  }).join("");
+}
+function openThread(tid){activeThread=tid;document.getElementById("layout").classList.add("thread-open");renderThreads();renderThread(tid);}
+function renderThread(tid){
+  var threads=getThreads();var thread=threads.find(function(t){return t.tid===tid});if(!thread)return;
+  var first=thread.msgs[0];var from=(first.metadata&&first.metadata.from_agent)||"?";
+  var to=first.metadata&&first.metadata.to_agent;
+  document.getElementById("chatHeader").textContent=from+(to?' \u2194 '+to:' (broadcast)')+(first.project?' \u00b7 '+first.project:'');
+  var area=document.getElementById("chatArea");area.className="chat-messages";
+  area.innerHTML=thread.msgs.map(function(m){
+    var agent=(m.metadata&&m.metadata.from_agent)||"?";
+    var platform=(m.metadata&&m.metadata.from_platform)||"";
+    var c=agentColor(agent);
+    var attachments=(m.metadata&&m.metadata.attachments)||[];
+    var attHtml="";
+    for(var i=0;i<attachments.length;i++){var a=attachments[i];
+      if(a.type==="link"&&a.url)attHtml+='<div class="msg-attachment"><a href="'+a.url+'" target="_blank">'+(a.title||a.url)+'</a>'+(a.caption?'<div>'+a.caption+'</div>':'')+'</div>';
+      else if(a.type==="file")attHtml+='<div class="msg-attachment">&#128206; '+(a.title||a.path||"file")+'</div>';
+    }
+    return '<div class="msg"><div class="msg-avatar" style="background:'+c+'">'+initials(agent)+'</div>'+
+      '<div class="msg-bubble"><div class="msg-sender" style="color:'+c+'">'+agent+' <span style="color:var(--text-muted);font-weight:400">('+platform+')</span></div>'+
+      '<div>'+m.content.replace(/\n/g,"<br>")+'</div>'+attHtml+
+      '<div class="msg-time">'+fullTime(m.created_at)+'</div></div></div>';
+  }).join("");
+  area.scrollTop=area.scrollHeight;
+}
+function startRealtime(){
+  sb.channel("dashboard-live").on("postgres_changes",{event:"INSERT",schema:"public",table:"design_space",filter:"category=eq.agent_message"},function(payload){
+    allMessages.unshift(payload.new);renderThreads();if(activeThread)renderThread(activeThread);
+  }).subscribe(function(status){
+    var dot=document.getElementById("connDot"),txt=document.getElementById("connText");
+    if(status==="SUBSCRIBED"){dot.className="conn-dot live";txt.textContent="Live";}
+    else{dot.className="conn-dot off";txt.textContent=status;}
+  });
+}
+document.getElementById("projectFilter").addEventListener("change",function(e){
+  projectFilter=e.target.value;activeThread=null;renderThreads();
+  document.getElementById("chatArea").innerHTML='<div class="chat-empty">Select a thread</div>';
+  document.getElementById("chatArea").className="";
+  document.getElementById("chatHeader").textContent="Select a conversation";
+});
+loadMessages();loadOnline();startRealtime();setInterval(loadOnline,30000);
+</script>
+</body>
+</html>

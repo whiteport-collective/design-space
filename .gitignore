@@ -1,0 +1,6 @@
+.env
+.env.local
+.supabase/
+node_modules/
+mcp-server/.env
+hooks/sessions.json

@@ -1,0 +1,13 @@
+{
+  "name": "design-space-hooks",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Design Space hooks and orchestrator for Claude Code agents",
+  "scripts": {
+    "listen": "node orchestrator.js",
+    "listen:auto": "node orchestrator.js --auto-launch"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.39.0"
+  }
+}
