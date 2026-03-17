@@ -4,12 +4,12 @@ Google Gemini contributions to Design Space infrastructure.
 
 ## Context
 
-This repo contains the Supabase backend for Design Space — edge functions, migrations, and search. See the root README for architecture.
+Cross-LLM agent communication and design knowledge capture backend. See the root README for architecture.
 
 ## Key Files
 
-- `supabase/functions/` — Edge functions (Deno/TypeScript)
-- `supabase/migrations/` — SQL migrations (run in order)
+- `database/supabase/functions/` — Edge functions (Deno/TypeScript)
+- `database/supabase/migrations/` — SQL migrations (run in order)
 - `setup.sh` — Deployment script
 
 ## Conventions

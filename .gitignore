@@ -1,6 +1,9 @@
 .env
 .env.local
 .supabase/
+database/supabase/.temp/
 node_modules/
 mcp-server/.env
 hooks/sessions.json
+hooks/poll-state.json
+**/__pycache__/

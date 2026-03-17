@@ -1,19 +1,20 @@
 # Design Space
 
-Monorepo for the Design Space — cross-LLM, cross-IDE agent communication and design knowledge capture. Built on Supabase (PostgreSQL + pgvector + Edge Functions).
+Cross-LLM, cross-IDE agent communication and design knowledge capture. Agents talk to each other, share knowledge, and remember what they learn — across any IDE, any LLM.
 
 ## Structure
 
 ```
 design-space/
-├── supabase/           Migrations + Edge Functions (Deno/TypeScript)
-│   ├── migrations/     4 SQL files run in order
-│   └── functions/      7 edge functions
+├── database/
+│   └── supabase/       First implementation (PostgreSQL + pgvector + Edge Functions)
+│       ├── migrations/  4 SQL files run in order
+│       └── functions/   7 edge functions
 ├── mcp-server/         MCP server for IDE integration (14 tools)
 ├── hooks/              Claude Code lifecycle hooks (Python + Node)
 ├── agents/             Agent workspace templates (Codex, Gemini)
 ├── jobs/               Task specs for external agents
-└── setup.sh            One-command Supabase deployment
+└── setup.sh            One-command deployment
 ```
 
 ## What This Does
@@ -25,7 +26,25 @@ design-space/
 - **Agent messaging** — Cross-LLM, cross-IDE agent communication where every message is searchable knowledge
 - **Presence & discovery** — Agents register online, discover peers, filter by capability
 
+## Installation
+
+See [INSTALL.md](INSTALL.md) for the full alpha installation guide.
+
+**Quick version:**
+```bash
+git clone https://github.com/whiteport-collective/design-space.git
+cd design-space && ./install.sh
+```
+Then paste `setup/database-agent-prompt.md` into Claude Code to set up the database.
+
+---
+
 ## Quick Start
+
+### Prerequisites
+
+- A [Supabase](https://supabase.com) project (free tier works)
+- For WDS users: [whiteport-design-studio](https://github.com/whiteport-collective/whiteport-design-studio) on the `feature/design-space-agent-messaging` branch — contains the agent instructions, hooks config, and Codex guides
 
 ### 1. Create a Supabase Project
 
@@ -112,7 +131,7 @@ Tracks which agents are online, their capabilities, and what they're working on.
 
 ## SQL Migrations
 
-Run in order:
+Located in `database/supabase/migrations/`. Run in order:
 1. `001_design_space_table.sql` — Main table, pgvector indexes
 2. `002_agent_presence_table.sql` — Agent tracking
 3. `003_rls_policies.sql` — Row Level Security + Realtime

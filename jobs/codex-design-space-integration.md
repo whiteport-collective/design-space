@@ -110,7 +110,7 @@ Use GitHub Action for reliability + AGENTS.md for interactive awareness.
 ## Reference
 
 - Working Claude Code hooks: `hooks/` in this repo
-- Edge Function source: `supabase/functions/` in this repo
+- Edge Function source: `database/supabase/functions/` in this repo
 - Python client: `hooks/ds_client.py`
 
 ---

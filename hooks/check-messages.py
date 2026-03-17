@@ -13,8 +13,8 @@ import urllib.request
 # Fix Windows console encoding
 sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 
-SUPABASE_URL = os.environ.get("DESIGN_SPACE_URL", "https://uztngidbpduyodrabokm.supabase.co")
-SUPABASE_KEY = os.environ.get("DESIGN_SPACE_ANON_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV6dG5naWRicGR1eW9kcmFib2ttIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDEyNjI0MzksImV4cCI6MjA1NjgzODQzOX0.L1XMXA3EBFlW-8ZPFaJO3suMOakJPBGKCyMpy6A3UjE")
+SUPABASE_URL = os.environ.get("DESIGN_SPACE_URL")
+SUPABASE_KEY = os.environ.get("DESIGN_SPACE_ANON_KEY")
 
 def check_messages():
     """Check Design Space for unread agent messages."""
@@ -28,16 +28,19 @@ def check_messages():
     if hook_input.get("hook_event_name") != "PostToolUse":
         return
 
-    # Determine agent identity from env or session
+    # Determine agent identity and project from env
     agent_id = os.environ.get("AGENT_ID", "claude-code")
+    agent_project = os.environ.get("AGENT_PROJECT", "")
 
     # Call Design Space edge function
-    payload = json.dumps({
+    payload = {
         "action": "check",
         "agent_id": agent_id,
-        "include_broadcast": True,
-        "limit": 5
-    }).encode("utf-8")
+        "limit": 50,
+    }
+    if agent_project:
+        payload["project"] = agent_project
+    payload = json.dumps(payload).encode("utf-8")
 
     req = urllib.request.Request(
         f"{SUPABASE_URL}/functions/v1/agent-messages",
@@ -59,13 +62,23 @@ def check_messages():
     if not messages:
         return
 
-    # Build message summary for agent context
+    # Build message summary for agent context — grouped by signal strength
+    signal_labels = {
+        "strong": "DIRECT+PROJECT",
+        "medium": "DIRECT",
+        "weak": "PROJECT",
+        "available": "FYI",
+    }
     lines = []
     for msg in messages:
         meta = msg.get("metadata", {})
         from_agent = meta.get("from_agent", "unknown")
         priority = meta.get("priority", "normal")
-        prefix = "URGENT" if priority == "urgent" else "NEW"
+        signal = msg.get("signal", "available")
+        if priority == "urgent":
+            prefix = "URGENT"
+        else:
+            prefix = signal_labels.get(signal, "FYI")
         content = msg.get("content", "")[:300]
         lines.append(f"[{prefix}] from {from_agent}: {content}")
 

@@ -1,6 +1,6 @@
 # Codex Agent Workspace
 
-You are working on Design Space, a Supabase-powered backend for cross-LLM agent communication and design knowledge capture.
+You are working on Design Space, a cross-LLM agent communication and design knowledge capture backend.
 
 ## Step 0: Use the Codex Scripts
 
@@ -34,7 +34,7 @@ If you need more context about existing patterns or decisions, use the shared cl
 ```text
 design-space/
 |-- agents/
-|-- supabase/
+|-- database/supabase/
 |   |-- functions/
 |   `-- migrations/
 |-- mcp-server/

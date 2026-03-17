@@ -56,7 +56,7 @@ curl -s -X POST "$DESIGN_SPACE_URL/functions/v1/agent-messages" \
 design-space/
 |-- AGENTS.md
 |-- .env
-|-- supabase/
+|-- database/supabase/
 |   |-- functions/
 |   `-- migrations/
 |-- mcp-server/

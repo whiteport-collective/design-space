@@ -1,6 +1,6 @@
 #!/bin/bash
-# Design Space Infrastructure — One-command Supabase deployment
-# Usage: ./setup.sh
+# Design Space — One-command database deployment (Supabase)
+# Usage: ./setup.sh <project-ref>
 #
 # Prerequisites:
 #   - Supabase CLI installed (npm i -g supabase)
@@ -36,14 +36,14 @@ supabase link --project-ref "$PROJECT_REF"
 
 # Run migrations
 echo "2/3 Running database migrations..."
-for migration in supabase/migrations/*.sql; do
+for migration in database/supabase/migrations/*.sql; do
   echo "  Applying: $(basename "$migration")"
   supabase db push --file "$migration"
 done
 
 # Deploy edge functions
 echo "3/3 Deploying edge functions..."
-for func_dir in supabase/functions/*/; do
+for func_dir in database/supabase/functions/*/; do
   func_name=$(basename "$func_dir")
   echo "  Deploying: $func_name"
   supabase functions deploy "$func_name" --project-ref "$PROJECT_REF"

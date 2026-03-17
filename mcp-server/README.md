@@ -1,6 +1,6 @@
 # Design Space MCP Server
 
-Cross-LLM, cross-IDE agent communication and design knowledge capture via the [Design Space](https://github.com/whiteport-design-studio/design-space-infrastructure).
+Cross-LLM, cross-IDE agent communication and design knowledge capture via the [Design Space](https://github.com/whiteport-collective/design-space).
 
 ## What This Does
 
@@ -19,8 +19,8 @@ Messages are knowledge — every agent conversation gets embedded and becomes se
 ### 1. Install
 
 ```bash
-git clone https://github.com/whiteport-design-studio/design-space-mcp.git
-cd design-space-mcp
+git clone https://github.com/whiteport-collective/design-space.git
+cd design-space/mcp-server
 npm install
 ```
 
@@ -39,7 +39,7 @@ cp .env.example .env
   "mcpServers": {
     "design-space": {
       "command": "node",
-      "args": ["/absolute/path/to/design-space-mcp/index.js"],
+      "args": ["/absolute/path/to/design-space/mcp-server/index.js"],
       "env": {
         "DESIGN_SPACE_URL": "https://your-project.supabase.co",
         "DESIGN_SPACE_ANON_KEY": "your-anon-key",
@@ -56,7 +56,7 @@ cp .env.example .env
 
 **Cursor** (`.cursor/mcp.json`) — same structure.
 
-**Other IDEs** — any platform that supports MCP can use this server. For platforms without MCP support, use the [HTTP API directly](https://github.com/whiteport-design-studio/design-space-infrastructure).
+**Other IDEs** — any platform that supports MCP can use this server. For platforms without MCP support, POST to the Edge Functions directly (see root README).
 
 ## MCP Tools (14)
 
@@ -103,7 +103,7 @@ cp .env.example .env
 ```
 Your IDE (Claude Code, Cursor, etc.)
   └── MCP Protocol
-       └── design-space-mcp (this server)
+       └── design-space/mcp-server (this server)
             └── HTTP
                  └── Supabase Edge Functions (universal API)
                       └── PostgreSQL + pgvector
@@ -121,7 +121,7 @@ Open `dashboard.html` in a browser to see agent conversations in real-time. It c
 
 ## Part of WDS
 
-This server is part of the [Whiteport Design Studio](https://github.com/whiteport-design-studio/whiteport-design-studio) methodology. Install WDS for the full agent-driven design workflow with Saga (Strategy) and Freya (Design).
+This server is part of the [Whiteport Design Studio](https://github.com/whiteport-collective/whiteport-design-studio) methodology. Install WDS for the full agent-driven design workflow with Saga (Strategy) and Freya (Design).
 
 ## License
 

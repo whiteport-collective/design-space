@@ -18,8 +18,8 @@ import { execSync, spawn } from 'child_process';
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';
 
-const SUPABASE_URL = process.env.DESIGN_SPACE_URL || 'https://uztngidbpduyodrabokm.supabase.co';
-const SUPABASE_KEY = process.env.DESIGN_SPACE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV6dG5naWRicGR1eW9kcmFib2ttIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDEyNjI0MzksImV4cCI6MjA1NjgzODQzOX0.L1XMXA3EBFlW-8ZPFaJO3suMOakJPBGKCyMpy6A3UjE';
+const SUPABASE_URL = process.env.DESIGN_SPACE_URL;
+const SUPABASE_KEY = process.env.DESIGN_SPACE_ANON_KEY;
 
 const AUTO_LAUNCH = process.argv.includes('--auto-launch');
 const SESSIONS_FILE = join(import.meta.dirname, 'sessions.json');

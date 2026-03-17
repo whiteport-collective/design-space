@@ -23,13 +23,8 @@ if sys.platform == "win32":
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 
-_DEFAULT_URL = "https://uztngidbpduyodrabokm.supabase.co"
-_DEFAULT_KEY = (
-    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
-    "eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV6dG5naWRicGR1eW9kcmFib2ttIiwi"
-    "cm9sZSI6ImFub24iLCJpYXQiOjE3NDEyNjI0MzksImV4cCI6MjA1NjgzODQzOX0."
-    "L1XMXA3EBFlW-8ZPFaJO3suMOakJPBGKCyMpy6A3UjE"
-)
+_DEFAULT_URL = None
+_DEFAULT_KEY = None
 
 
 class DesignSpace:

@@ -1,6 +1,7 @@
 // agent-messages: Cross-LLM, cross-IDE agent communication + work orders
 // POST { action: "send" | "check" | "respond" | "register" | "who-online" | "mark-read" | "thread"
-//                | "post-task" | "claim-task" | "list-tasks" | "update-task" }
+//                | "post-task" | "claim-task" | "list-tasks" | "update-task"
+//                | "get-protocol" | "update-protocol" | "ack-protocol" }
 // Messages stored in design_space table (category = "agent_message" | "task") — every entry is searchable knowledge
 
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
@@ -82,7 +83,7 @@ serve(async (req) => {
             capabilities,
             priority,
             attachments,
-            read: false,
+            read_by: [],
           },
         })
         .select()
@@ -95,38 +96,55 @@ serve(async (req) => {
 
     // ==================== CHECK ====================
     if (action === "check") {
-      const { agent_id, project, include_broadcast = true, limit = 20 } = body;
+      const { agent_id, project, limit = 50 } = body;
 
       if (!agent_id) {
         return jsonResponse({ error: "agent_id is required" }, 400);
       }
 
-      // Fetch messages
-      let msgQuery = supabase
+      // Fetch all recent messages — no to_agent filter, signal strength handles relevance
+      const { data: messages, error: msgError } = await supabase
         .from("design_space")
         .select("*")
         .eq("category", "agent_message")
         .order("created_at", { ascending: false })
         .limit(limit);
 
-      if (project) {
-        msgQuery = msgQuery.eq("project", project);
-      }
-
-      if (include_broadcast) {
-        msgQuery = msgQuery.or(
-          `metadata->>to_agent.eq.${agent_id},metadata->>to_agent.is.null`
-        );
-      } else {
-        msgQuery = msgQuery.eq("metadata->>to_agent", agent_id);
-      }
-
-      const { data: messages, error: msgError } = await msgQuery;
       if (msgError) throw msgError;
 
+      // Filter out own messages and already-handled messages
       const unread = (messages || []).filter(
-        (m: any) => m.metadata?.from_agent !== agent_id
+        (m: any) => m.metadata?.from_agent !== agent_id && !(m.metadata?.read_by || []).includes(agent_id)
       );
+
+      // Compute signal strength for each message
+      const scored = unread.map((m: any) => {
+        const toAgent = m.metadata?.to_agent;
+        const msgProject = m.project;
+        const agentMatch = toAgent === agent_id;
+        const projectMatch = project && msgProject === project;
+
+        let signal: string;
+        if (agentMatch && projectMatch) {
+          signal = "strong";
+        } else if (agentMatch) {
+          signal = "medium";
+        } else if (projectMatch) {
+          signal = "weak";
+        } else {
+          signal = "available";
+        }
+
+        return { ...m, signal };
+      });
+
+      // Sort by signal strength, then by recency within each tier
+      const signalOrder: Record<string, number> = { strong: 0, medium: 1, weak: 2, available: 3 };
+      scored.sort((a: any, b: any) => {
+        const diff = signalOrder[a.signal] - signalOrder[b.signal];
+        if (diff !== 0) return diff;
+        return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+      });
 
       // Fetch work orders assigned to this agent or unclaimed
       const { data: tasks, error: taskError } = await supabase
@@ -141,8 +159,8 @@ serve(async (req) => {
       if (taskError) throw taskError;
 
       return jsonResponse({
-        messages: unread,
-        unread_count: unread.length,
+        messages: scored,
+        unread_count: scored.length,
         tasks: tasks || [],
         task_count: (tasks || []).length,
       });
@@ -153,7 +171,7 @@ serve(async (req) => {
       const {
         message_id, thread_id: provided_thread_id,
         content, from_agent, from_platform = "claude-code",
-        message_type = "answer", attachments = [],
+        message_type = "answer", attachments = [], project,
       } = body;
 
       if (!content || !from_agent) {
@@ -183,11 +201,23 @@ serve(async (req) => {
 
       const embedding = await getEmbedding(content);
 
+      // Inherit project from original message if not provided
+      let resolvedProject = project;
+      if (!resolvedProject && message_id) {
+        const { data: orig } = await supabase
+          .from("design_space")
+          .select("project")
+          .eq("id", message_id)
+          .single();
+        if (orig) resolvedProject = orig.project;
+      }
+
       const { data: message, error } = await supabase
         .from("design_space")
         .insert({
           content,
           category: "agent_message",
+          project: resolvedProject || null,
           embedding,
           thread_id,
           metadata: {
@@ -196,7 +226,7 @@ serve(async (req) => {
             to_agent,
             message_type,
             attachments,
-            read: false,
+            read_by: [],
           },
         })
         .select()
@@ -280,8 +310,11 @@ serve(async (req) => {
 
     // ==================== MARK-READ ====================
     if (action === "mark-read") {
-      const { message_ids } = body;
+      const { message_ids, agent_id } = body;
 
+      if (!agent_id) {
+        return jsonResponse({ error: "agent_id is required" }, 400);
+      }
       if (!message_ids || !Array.isArray(message_ids)) {
         return jsonResponse({ error: "message_ids array is required" }, 400);
       }
@@ -294,16 +327,20 @@ serve(async (req) => {
           .single();
 
         if (existing) {
+          const readBy = existing.metadata?.read_by || [];
+          if (!readBy.includes(agent_id)) {
+            readBy.push(agent_id);
+          }
           await supabase
             .from("design_space")
             .update({
-              metadata: { ...existing.metadata, read: true },
+              metadata: { ...existing.metadata, read_by: readBy },
             })
             .eq("id", id);
         }
       }
 
-      return jsonResponse({ marked: message_ids.length });
+      return jsonResponse({ marked: message_ids.length, agent_id });
     }
 
     // ==================== THREAD ====================
@@ -473,7 +510,101 @@ serve(async (req) => {
       return jsonResponse({ task });
     }
 
-    return jsonResponse({ error: `Invalid action. Use: send, check, respond, mark-read, thread, register, who-online, post-task, claim-task, list-tasks, update-task` }, 400);
+    // ==================== GET-PROTOCOL ====================
+    if (action === "get-protocol") {
+      const { agent_id } = body;
+
+      // Fetch the latest protocol entry
+      const { data: protocol, error } = await supabase
+        .from("design_space")
+        .select("*")
+        .eq("category", "protocol")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .single();
+
+      if (error && error.code !== "PGRST116") throw error; // PGRST116 = no rows
+
+      if (!protocol) {
+        return jsonResponse({ protocol: null, version: 0 });
+      }
+
+      // Check if this agent has seen this version
+      const readBy = protocol.metadata?.read_by || [];
+      const isNew = agent_id ? !readBy.includes(agent_id) : true;
+
+      return jsonResponse({
+        protocol: protocol.content,
+        version: protocol.metadata?.version || 1,
+        is_new: isNew,
+        updated_at: protocol.updated_at || protocol.created_at,
+      });
+    }
+
+    // ==================== UPDATE-PROTOCOL ====================
+    if (action === "update-protocol") {
+      const { content, from_agent, version } = body;
+
+      if (!content || !version) {
+        return jsonResponse({ error: "content and version are required" }, 400);
+      }
+
+      // Upsert: delete old protocol, insert new one
+      await supabase
+        .from("design_space")
+        .delete()
+        .eq("category", "protocol");
+
+      const { data: protocol, error } = await supabase
+        .from("design_space")
+        .insert({
+          content,
+          category: "protocol",
+          metadata: {
+            version,
+            from_agent: from_agent || "system",
+            read_by: [],
+          },
+        })
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      return jsonResponse({ protocol, version });
+    }
+
+    // ==================== ACK-PROTOCOL ====================
+    if (action === "ack-protocol") {
+      const { agent_id } = body;
+
+      if (!agent_id) {
+        return jsonResponse({ error: "agent_id is required" }, 400);
+      }
+
+      const { data: protocol } = await supabase
+        .from("design_space")
+        .select("id, metadata")
+        .eq("category", "protocol")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .single();
+
+      if (protocol) {
+        const readBy = protocol.metadata?.read_by || [];
+        if (!readBy.includes(agent_id)) {
+          readBy.push(agent_id);
+        }
+        await supabase
+          .from("design_space")
+          .update({ metadata: { ...protocol.metadata, read_by: readBy } })
+          .eq("id", protocol.id);
+      }
+
+      return jsonResponse({ acknowledged: true, agent_id });
+    }
+
+    return jsonResponse({ error: `Invalid action. Use: send, check, respond, mark-read, thread, register, who-online, post-task, claim-task, list-tasks, update-task, get-protocol, update-protocol, ack-protocol` }, 400);
   } catch (err) {
     return jsonResponse({ error: err.message }, 500);
   }

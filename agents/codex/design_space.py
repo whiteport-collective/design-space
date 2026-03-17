@@ -228,7 +228,7 @@ class DesignSpaceClient:
         return self._post("agent-messages", payload)
 
     def mark_read(self, message_ids: Iterable[str]) -> dict[str, Any]:
-        return self._post("agent-messages", {"action": "mark-read", "message_ids": list(message_ids)})
+        return self._post("agent-messages", {"action": "mark-read", "message_ids": list(message_ids), "agent_id": self.agent_id})
 
     def register(
         self,
