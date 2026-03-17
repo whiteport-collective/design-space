@@ -1,4 +1,9 @@
 -- Semantic similarity search function (used by search-design-space edge function)
+-- Drop all overloads first to prevent ambiguity (only one canonical signature allowed)
+drop function if exists public.search_design_space(vector, float8, int, text, text, text, text);
+drop function if exists public.search_design_space(vector, float8, int, text, text, text, text[], text[]);
+drop function if exists public.search_design_space(vector, float8, int, text, text, text);
+
 create or replace function search_design_space(
   query_embedding vector(1536),
   similarity_threshold float,
