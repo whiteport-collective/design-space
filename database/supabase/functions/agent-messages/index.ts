@@ -102,12 +102,17 @@ serve(async (req) => {
         return jsonResponse({ error: "agent_id is required" }, 400);
       }
 
-      // Phase 1: All direct messages to this agent (no limit — never miss a direct message)
+      // Derive base agent name if this is a session-scoped ID (e.g. "freya-2567" → "freya")
+      const sessionMatch = agent_id.match(/^(.+)-(\d{4})$/);
+      const baseAgentId = sessionMatch ? sessionMatch[1] : null;
+
+      // Phase 1: All direct messages to this agent or its base name (no limit — never miss a direct message)
+      const directIds = baseAgentId ? [agent_id, baseAgentId] : [agent_id];
       const { data: directMessages, error: directError } = await supabase
         .from("design_space")
         .select("*")
         .eq("category", "agent_message")
-        .eq("metadata->>to_agent", agent_id)
+        .in("metadata->>to_agent", directIds)
         .not("metadata", "cs", `{"read_by":["${agent_id}"]}`)
         .order("created_at", { ascending: false });
 
@@ -287,10 +292,19 @@ serve(async (req) => {
         return jsonResponse({ error: "agent_id is required" }, 400);
       }
 
+      // Generate a session-scoped ID if the caller passed a bare base name (e.g. "freya")
+      // Session suffix = 4-digit number, e.g. "freya-2567"
+      // Already-suffixed IDs (e.g. "freya-2567") are passed through unchanged.
+      const alreadySuffixed = /^.+-\d{4}$/.test(agent_id);
+      const sessionCode = alreadySuffixed ? null : String(Math.floor(1000 + Math.random() * 9000));
+      const effectiveAgentId = alreadySuffixed ? agent_id : `${agent_id}-${sessionCode}`;
+      const baseAgentId = alreadySuffixed ? agent_id.replace(/-\d{4}$/, "") : agent_id;
+      const code = sessionCode || effectiveAgentId.split("-").pop();
+
       const { data: agent, error } = await supabase
         .from("agent_presence")
         .upsert({
-          agent_id,
+          agent_id: effectiveAgentId,
           agent_name: agent_name || agent_id,
           model,
           platform,
@@ -302,14 +316,31 @@ serve(async (req) => {
           tools_available,
           context_window,
           status,
+          session_id: crypto.randomUUID(),
+          session_start: new Date().toISOString(),
           last_heartbeat: new Date().toISOString(),
+          metadata: { base_agent_id: baseAgentId, session_code: code },
         }, { onConflict: "agent_id" })
         .select()
         .single();
 
       if (error) throw error;
 
-      return jsonResponse({ agent });
+      // Fetch who else is currently online (heartbeat within 5 minutes)
+      const cutoff = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+      const { data: onlineAgents } = await supabase
+        .from("agent_presence")
+        .select("agent_id, agent_name, project, working_on, last_heartbeat")
+        .eq("status", "online")
+        .gte("last_heartbeat", cutoff)
+        .neq("agent_id", effectiveAgentId);
+
+      return jsonResponse({
+        agent,
+        session_id: effectiveAgentId,
+        session_code: code,
+        online: onlineAgents || [],
+      });
     }
 
     // ==================== WHO-ONLINE ====================
