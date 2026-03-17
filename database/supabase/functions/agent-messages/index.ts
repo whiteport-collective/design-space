@@ -285,7 +285,7 @@ serve(async (req) => {
         agent_id, agent_name, model, platform = "claude-code",
         framework, project, working_on, workspace,
         capabilities = [], tools_available = [],
-        context_window, status = "online",
+        context_window, status = "online", pronouns,
       } = body;
 
       if (!agent_id) {
@@ -316,6 +316,7 @@ serve(async (req) => {
           tools_available,
           context_window,
           status,
+          pronouns,
           session_id: crypto.randomUUID(),
           session_start: new Date().toISOString(),
           last_heartbeat: new Date().toISOString(),
@@ -330,7 +331,7 @@ serve(async (req) => {
       const cutoff = new Date(Date.now() - 5 * 60 * 1000).toISOString();
       const { data: onlineAgents } = await supabase
         .from("agent_presence")
-        .select("agent_id, agent_name, project, working_on, last_heartbeat")
+        .select("agent_id, agent_name, pronouns, project, working_on, last_heartbeat")
         .eq("status", "online")
         .gte("last_heartbeat", cutoff)
         .neq("agent_id", effectiveAgentId);
