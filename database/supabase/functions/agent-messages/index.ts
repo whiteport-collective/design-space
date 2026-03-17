@@ -96,26 +96,46 @@ serve(async (req) => {
 
     // ==================== CHECK ====================
     if (action === "check") {
-      const { agent_id, project, limit = 50 } = body;
+      const { agent_id, project, limit = 20 } = body;
 
       if (!agent_id) {
         return jsonResponse({ error: "agent_id is required" }, 400);
       }
 
-      // Fetch all recent messages — no to_agent filter, signal strength handles relevance
-      const { data: messages, error: msgError } = await supabase
+      // Phase 1: All direct messages to this agent (no limit — never miss a direct message)
+      const { data: directMessages, error: directError } = await supabase
         .from("design_space")
         .select("*")
         .eq("category", "agent_message")
+        .eq("metadata->>to_agent", agent_id)
+        .not("metadata", "cs", `{"read_by":["${agent_id}"]}`)
+        .order("created_at", { ascending: false });
+
+      if (directError) throw directError;
+
+      // Phase 2: Recent broadcast messages (no specific to_agent) for ambient awareness
+      const { data: broadcastMessages, error: broadcastError } = await supabase
+        .from("design_space")
+        .select("*")
+        .eq("category", "agent_message")
+        .is("metadata->>to_agent", null)
         .order("created_at", { ascending: false })
         .limit(limit);
 
-      if (msgError) throw msgError;
+      if (broadcastError) throw broadcastError;
 
-      // Filter out own messages and already-handled messages
-      const unread = (messages || []).filter(
-        (m: any) => m.metadata?.from_agent !== agent_id && !(m.metadata?.read_by || []).includes(agent_id)
-      );
+      // Merge, deduplicate, filter already-read and own messages
+      const seen = new Set<string>();
+      const allMessages = [...(directMessages || []), ...(broadcastMessages || [])].filter((m: any) => {
+        if (seen.has(m.id)) return false;
+        seen.add(m.id);
+        const alreadyRead = (m.metadata?.read_by || []).includes(agent_id);
+        // For broadcasts, also filter out own messages
+        const isOwnBroadcast = m.metadata?.to_agent == null && m.metadata?.from_agent === agent_id;
+        return !alreadyRead && !isOwnBroadcast;
+      });
+
+      const unread = allMessages;
 
       // Compute signal strength for each message
       const scored = unread.map((m: any) => {
