@@ -24,7 +24,7 @@ returns table (
   source text,
   source_file text,
   pattern_type text,
-  quality_score numeric,
+  quality_score real,
   pair_id uuid,
   metadata jsonb,
   thread_id uuid,
