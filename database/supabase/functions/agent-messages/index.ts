@@ -124,13 +124,30 @@ serve(async (req) => {
 
       if (broadcastError) throw broadcastError;
 
+      // Phase 3: Recent messages directed to other agents — cross-agent awareness
+      // Needed when an agent checks under a generic ID (e.g. "claude-code") but messages
+      // were addressed to their persona name (e.g. "ivonne", "codex")
+      const { data: crossMessages, error: crossError } = await supabase
+        .from("design_space")
+        .select("*")
+        .eq("category", "agent_message")
+        .not("metadata->>to_agent", "is", null)
+        .neq("metadata->>to_agent", agent_id)
+        .order("created_at", { ascending: false })
+        .limit(10);
+
+      if (crossError) throw crossError;
+
       // Merge, deduplicate, filter already-read and own messages
       const seen = new Set<string>();
-      const allMessages = [...(directMessages || []), ...(broadcastMessages || [])].filter((m: any) => {
+      const allMessages = [
+        ...(directMessages || []),
+        ...(broadcastMessages || []),
+        ...(crossMessages || []),
+      ].filter((m: any) => {
         if (seen.has(m.id)) return false;
         seen.add(m.id);
         const alreadyRead = (m.metadata?.read_by || []).includes(agent_id);
-        // For broadcasts, also filter out own messages
         const isOwnBroadcast = m.metadata?.to_agent == null && m.metadata?.from_agent === agent_id;
         return !alreadyRead && !isOwnBroadcast;
       });
