@@ -283,7 +283,7 @@ serve(async (req) => {
     if (action === "register") {
       const {
         agent_id, agent_name, model, platform = "claude-code",
-        framework, project, working_on, workspace,
+        framework, repo, working_on, workspace,
         capabilities = [], tools_available = [],
         context_window, status = "online", pronouns,
       } = body;
@@ -309,7 +309,7 @@ serve(async (req) => {
           model,
           platform,
           framework,
-          project,
+          repo,
           working_on,
           workspace,
           capabilities,
@@ -331,7 +331,7 @@ serve(async (req) => {
       const cutoff = new Date(Date.now() - 5 * 60 * 1000).toISOString();
       const { data: onlineAgents } = await supabase
         .from("agent_presence")
-        .select("agent_id, agent_name, pronouns, project, working_on, last_heartbeat")
+        .select("agent_id, agent_name, pronouns, repo, working_on, last_heartbeat")
         .eq("status", "online")
         .gte("last_heartbeat", cutoff)
         .neq("agent_id", effectiveAgentId);
@@ -346,7 +346,7 @@ serve(async (req) => {
 
     // ==================== WHO-ONLINE ====================
     if (action === "who-online") {
-      const { project, capability } = body;
+      const { repo, capability } = body;
 
       // Consider agents online if heartbeat within last 5 minutes
       const cutoff = new Date(Date.now() - 5 * 60 * 1000).toISOString();
@@ -357,8 +357,8 @@ serve(async (req) => {
         .eq("status", "online")
         .gte("last_heartbeat", cutoff);
 
-      if (project) {
-        query = query.eq("project", project);
+      if (repo) {
+        query = query.eq("repo", repo);
       }
 
       const { data: agents, error } = await query;
