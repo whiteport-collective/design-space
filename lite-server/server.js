@@ -2,11 +2,13 @@
 // Agent Space Lite — local SQLite backend for Design Space
 // Same API as the Supabase edge functions, zero infrastructure.
 // Usage: node server.js [--port 3141] [--db ./design-space.db]
+// Set OPENROUTER_API_KEY env var for semantic vector search (optional).
 
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
+import * as sqliteVec from "sqlite-vec";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -20,6 +22,12 @@ const DB_PATH = args[args.indexOf("--db") + 1] || path.join(process.cwd(), "desi
 const db = new Database(DB_PATH);
 db.pragma("journal_mode = WAL");
 db.pragma("foreign_keys = ON");
+
+// Load sqlite-vec extension for vector search
+sqliteVec.load(db);
+
+const EMBEDDING_DIMS = 1536; // text-embedding-3-small
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || null;
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS design_space (
@@ -67,6 +75,45 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_ds_created ON design_space(created_at);
   CREATE INDEX IF NOT EXISTS idx_ap_status ON agent_presence(status);
 `);
+
+// Vector table for semantic search (sqlite-vec)
+db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS ds_embeddings USING vec0(embedding float[${EMBEDDING_DIMS}])`);
+
+// ==================== EMBEDDINGS ====================
+
+async function getEmbedding(text) {
+  if (!OPENROUTER_API_KEY) return null;
+  try {
+    const response = await fetch("https://openrouter.ai/api/v1/embeddings", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ model: "openai/text-embedding-3-small", input: text }),
+    });
+    if (!response.ok) return null;
+    const data = await response.json();
+    return data.data[0].embedding;
+  } catch {
+    return null;
+  }
+}
+
+function storeEmbedding(rowid, embedding) {
+  if (!embedding) return;
+  const buf = Buffer.from(new Float32Array(embedding).buffer);
+  try {
+    db.prepare("INSERT OR REPLACE INTO ds_embeddings(rowid, embedding) VALUES (?, ?)").run(rowid, buf);
+  } catch {
+    // Ignore — vector search is optional
+  }
+}
+
+function getRowidForId(id) {
+  const row = db.prepare("SELECT rowid FROM design_space WHERE id = ?").get(id);
+  return row ? row.rowid : null;
+}
 
 // ==================== HELPERS ====================
 
@@ -122,6 +169,10 @@ function handleAgentMessages(body) {
       VALUES (?, ?, 'agent_message', ?, ?, ?, ?, ?)`).run(
       id, content, project || null, JSON.stringify(topics), JSON.stringify(components), thread_id, metadata
     );
+
+    // Embed async (don't block response)
+    const rowid = getRowidForId(id);
+    getEmbedding(content).then((emb) => storeEmbedding(rowid, emb));
 
     const message = db.prepare("SELECT * FROM design_space WHERE id = ?").get(id);
     message.metadata = jsonParse(message.metadata, {});
@@ -500,6 +551,10 @@ function handleCapture(body) {
     JSON.stringify(topics), JSON.stringify(components), source || null, source_file || null, quality_score
   );
 
+  // Embed async (don't block response)
+  const rowid = getRowidForId(id);
+  getEmbedding(content).then((emb) => storeEmbedding(rowid, emb));
+
   const entry = db.prepare("SELECT * FROM design_space WHERE id = ?").get(id);
   entry.topics = jsonParse(entry.topics, []);
   entry.components = jsonParse(entry.components, []);
@@ -509,11 +564,56 @@ function handleCapture(body) {
 
 // ==================== SEARCH ====================
 
-function handleSearch(body) {
-  const { query, limit = 10, category, project, designer, threshold = 0 } = body;
+async function handleSearch(body) {
+  const { query, limit = 10, category, project, designer, threshold = 0.3 } = body;
   if (!query) return { error: "query is required", _status: 400 };
 
-  // Text-based search (FTS) — no embeddings needed for Lite
+  // Try semantic search first (if embeddings available)
+  const queryEmbedding = await getEmbedding(query);
+
+  if (queryEmbedding) {
+    // Semantic vector search via sqlite-vec
+    const queryBuf = Buffer.from(new Float32Array(queryEmbedding).buffer);
+
+    // Get candidate rowids from vector search (fetch more than limit to allow filtering)
+    const vecResults = db.prepare(
+      "SELECT rowid, distance FROM ds_embeddings WHERE embedding MATCH ? ORDER BY distance LIMIT ?"
+    ).all(queryBuf, limit * 3);
+
+    if (vecResults.length > 0) {
+      const rowids = vecResults.map((r) => r.rowid);
+      const distanceMap = new Map(vecResults.map((r) => [r.rowid, r.distance]));
+
+      // Fetch full records for these rowids
+      const placeholders = rowids.map(() => "?").join(",");
+      let sql = `SELECT rowid, * FROM design_space WHERE rowid IN (${placeholders})`;
+      const params = [...rowids];
+
+      if (category) { sql += " AND category = ?"; params.push(category); }
+      if (project) { sql += " AND project = ?"; params.push(project); }
+      if (designer) { sql += " AND designer = ?"; params.push(designer); }
+
+      const results = db.prepare(sql).all(...params);
+
+      // Add similarity score (convert distance to 0-1 similarity)
+      results.forEach((r) => {
+        const dist = distanceMap.get(r.rowid) || 2;
+        r.similarity = Math.max(0, 1 - dist / 2); // Normalize L2 distance to similarity
+        r.topics = jsonParse(r.topics, []);
+        r.components = jsonParse(r.components, []);
+        r.metadata = jsonParse(r.metadata, {});
+        delete r.rowid;
+      });
+
+      // Filter by threshold and sort by similarity
+      const filtered = results.filter((r) => r.similarity >= threshold);
+      filtered.sort((a, b) => b.similarity - a.similarity);
+
+      return { results: filtered.slice(0, limit), count: filtered.length, search_mode: "semantic" };
+    }
+  }
+
+  // Fallback: text-based search (no API key or no embeddings stored yet)
   const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
   let sql = "SELECT * FROM design_space WHERE 1=1";
   const params = [];
@@ -522,7 +622,6 @@ function handleSearch(body) {
   if (project) { sql += " AND project = ?"; params.push(project); }
   if (designer) { sql += " AND designer = ?"; params.push(designer); }
 
-  // Text match across content, topics, components
   if (terms.length > 0) {
     const termClauses = terms.map(() => "(LOWER(content) LIKE ? OR LOWER(topics) LIKE ? OR LOWER(components) LIKE ?)");
     sql += " AND (" + termClauses.join(" AND ") + ")";
@@ -539,10 +638,10 @@ function handleSearch(body) {
     r.topics = jsonParse(r.topics, []);
     r.components = jsonParse(r.components, []);
     r.metadata = jsonParse(r.metadata, {});
-    r.similarity = 0.5; // Placeholder — real similarity needs embeddings
+    r.similarity = null;
   });
 
-  return { results, count: results.length };
+  return { results, count: results.length, search_mode: "text" };
 }
 
 // ==================== HTTP SERVER ====================
@@ -573,7 +672,7 @@ const server = http.createServer(async (req, res) => {
     } else if (urlPath === "/capture-design-space" || urlPath === "/functions/v1/capture-design-space") {
       result = handleCapture(body);
     } else if (urlPath === "/search-design-space" || urlPath === "/functions/v1/search-design-space") {
-      result = handleSearch(body);
+      result = await handleSearch(body);
     } else {
       result = { error: `Unknown endpoint: ${urlPath}. Use /agent-messages, /capture-design-space, or /search-design-space`, _status: 404 };
     }
@@ -589,9 +688,10 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => {
   console.log(`\n  Agent Space Lite running on http://localhost:${PORT}`);
   console.log(`  Database: ${DB_PATH}`);
+  console.log(`  Search:   ${OPENROUTER_API_KEY ? "semantic (sqlite-vec + OpenRouter)" : "text-only (set OPENROUTER_API_KEY for semantic)"}`);
   console.log(`  Endpoints:`);
-  console.log(`    POST /agent-messages    — send, check, respond, register, who-online, ...`);
-  console.log(`    POST /capture-design-space — capture knowledge`);
-  console.log(`    POST /search-design-space  — search knowledge`);
+  console.log(`    POST /agent-messages       — send, check, respond, register, who-online, ...`);
+  console.log(`    POST /capture-design-space  — capture knowledge`);
+  console.log(`    POST /search-design-space   — search knowledge`);
   console.log(`\n  Same API as Supabase — just change BASE_URL to http://localhost:${PORT}\n`);
 });
