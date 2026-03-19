@@ -1,141 +1,177 @@
 # Design Space
 
+```
+     ╔══════════════════════════════════════════════════════╗
+     ║                                                      ║
+     ║     ┌─────────────────────────────────────────┐      ║
+     ║     │  D E S I G N   S P A C E                │      ║
+     ║     │                                         │      ║
+     ║     │  Agent Communication · Knowledge Base   │      ║
+     ║     │  Semantic Search · Work Orders           │      ║
+     ║     │                                         │      ║
+     ║     │  ┌───────────┐    ┌───────────────┐     │      ║
+     ║     │  │  SQLite   │    │   Supabase    │     │      ║
+     ║     │  │  Lite ◆   │    │   Team ◆◆     │     │      ║
+     ║     │  │           │    │               │     │      ║
+     ║     │  │ sqlite-vec│    │  PostgreSQL   │     │      ║
+     ║     │  │ local .db │    │  pgvector     │     │      ║
+     ║     │  │ zero infra│    │  edge funcs   │     │      ║
+     ║     │  └───────────┘    └───────────────┘     │      ║
+     ║     │                                         │      ║
+     ║     │       Same API · Same agents             │      ║
+     ║     │       Different backend                  │      ║
+     ║     └─────────────────────────────────────────┘      ║
+     ║                                                      ║
+     ╚══════════════════════════════════════════════════════╝
+```
+
 Cross-LLM, cross-IDE agent communication and design knowledge capture. Agents talk to each other, share knowledge, and remember what they learn — across any IDE, any LLM.
+
+**Two backends, one API.** Agents don't know or care which one they're talking to.
+
+## What This Does
+
+- **Semantic knowledge capture** — Store design insights with 1536d text embeddings
+- **Semantic vector search** — Find knowledge by meaning, not keywords (sqlite-vec or pgvector)
+- **Agent messaging** — Cross-agent communication with signal strength scoring, session-scoped IDs, threaded conversations
+- **Presence & discovery** — Agents register online (saga-2567), discover peers, see who's working on what
+- **Work orders** — Post, claim, and track tasks across agents and sessions
+- **Visual pattern memory** — Dual embeddings: semantic + 1024d visual (Supabase backend)
+- **Feedback learning** — Linked before/after pairs teach the system your design taste
+
+## Choose Your Backend
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                                                              │
+│   Agent Space Lite (SQLite)        Agent Space Team (Supabase)│
+│   ─────────────────────────        ───────────────────────────│
+│                                                              │
+│   ✓ Zero infrastructure            ✓ Multi-machine           │
+│   ✓ Data stays on your machine     ✓ Real-time collaboration │
+│   ✓ Single .db file                ✓ Edge functions          │
+│   ✓ sqlite-vec semantic search     ✓ pgvector semantic search│
+│   ✓ npm install && node server.js  ✓ Supabase free tier      │
+│   ✓ Enterprise/regulated friendly  ✓ Visual pattern memory   │
+│                                                              │
+│   Best for:                        Best for:                 │
+│   Solo builders, local-first,      Teams, studios, cross-    │
+│   air-gapped, regulated envs       machine collaboration     │
+│                                                              │
+└──────────────────────────────────────────────────────────────┘
+```
+
+## Quick Start — Lite (SQLite)
+
+```bash
+cd lite-server
+npm install
+node server.js
+```
+
+That's it. Server runs on `http://localhost:3141`, data in `./design-space.db`.
+
+For semantic vector search, set the embedding API key:
+```bash
+OPENROUTER_API_KEY=sk-or-... node server.js
+```
+
+Without the key, search uses text matching. With it, full semantic similarity via sqlite-vec.
+
+**Options:**
+```bash
+node server.js --port 3200 --db /path/to/my-project.db
+```
+
+## Quick Start — Team (Supabase)
+
+See [INSTALL.md](INSTALL.md) for full setup.
+
+```bash
+# 1. Create a Supabase project at supabase.com
+# 2. Deploy
+./setup.sh YOUR-PROJECT-REF
+
+# 3. Set secrets in Supabase dashboard → Edge Functions → Secrets
+#    OPENROUTER_API_KEY — for semantic embeddings
+```
 
 ## Structure
 
 ```
 design-space/
+├── lite-server/           SQLite backend (Agent Space Lite)
+│   ├── server.js          Same API as Supabase, local file
+│   └── package.json       Just better-sqlite3 + sqlite-vec
 ├── database/
-│   └── supabase/       First implementation (PostgreSQL + pgvector + Edge Functions)
-│       ├── migrations/  4 SQL files run in order
-│       └── functions/   7 edge functions
-├── mcp-server/         MCP server for IDE integration (14 tools)
-├── hooks/              Claude Code lifecycle hooks (Python + Node)
-├── agents/             Agent workspace templates (Codex, Gemini)
-├── jobs/               Task specs for external agents
-└── setup.sh            One-command deployment
+│   └── supabase/          Team backend (PostgreSQL + pgvector)
+│       ├── migrations/    7 SQL migrations
+│       └── functions/     Edge functions (agent-messages, capture, search)
+├── mcp-server/            MCP server for IDE integration
+├── hooks/                 Claude Code lifecycle hooks
+├── agents/                Agent workspace templates
+└── setup.sh               One-command Supabase deployment
 ```
 
-## What This Does
+## The API (same for both backends)
 
-- **Semantic knowledge capture** — Store design insights with 1536d text embeddings
-- **Visual pattern memory** — Dual embeddings: semantic + 1024d visual (Voyage AI)
-- **Feedback learning** — Linked before/after pairs teach the system your design taste
-- **Red flag detection** — Check new designs against known rejections before presenting
-- **Agent messaging** — Cross-LLM, cross-IDE agent communication where every message is searchable knowledge
-- **Presence & discovery** — Agents register online, discover peers, filter by capability
+All endpoints are `POST` with JSON body.
 
-## Installation
+### Agent Messages — `/agent-messages`
 
-See [INSTALL.md](INSTALL.md) for the full alpha installation guide.
+| Action | Purpose |
+|--------|---------|
+| `send` | Send a message to another agent (or broadcast) |
+| `check` | Check for unread messages (3-phase: direct → broadcast → cross-agent) |
+| `respond` | Reply in a thread (inherits project + recipient) |
+| `register` | Register presence with session-scoped ID (saga-2567) + pronouns + repo |
+| `who-online` | See which agents are active (5-minute heartbeat window) |
+| `mark-read` | Mark messages as read (per-agent tracking) |
+| `thread` | View full conversation thread |
+| `post-task` | Create a work order |
+| `claim-task` | Claim a work order |
+| `list-tasks` | List work orders (filter by project, status, assignee) |
+| `update-task` | Update work order status (ready → in-progress → done) |
+| `get-protocol` | Fetch the agent protocol contract |
+| `update-protocol` | Update the protocol |
+| `ack-protocol` | Acknowledge protocol version |
 
-**Quick version:**
-```bash
-git clone https://github.com/whiteport-collective/design-space.git
-cd design-space && ./install.sh
+### Knowledge — `/capture-design-space`
+
+Store design decisions, patterns, experiments, competitive intelligence.
+
+### Search — `/search-design-space`
+
+Find knowledge by semantic similarity (with embeddings) or text matching (without).
+
+## Signal Strength
+
+Messages are scored by relevance to the checking agent:
+
+| Signal | Meaning |
+|--------|---------|
+| **strong** | Directed to you + matches your project |
+| **medium** | Directed to you (any project) |
+| **weak** | Matches your project (sent to someone else) |
+| **available** | Ambient — neither directed nor project-matched |
+
+## Session-Scoped Agent IDs
+
+When an agent registers, it gets a unique session ID:
 ```
-Then paste `setup/database-agent-prompt.md` into Claude Code to set up the database.
-
----
-
-## Quick Start
-
-### Prerequisites
-
-- A [Supabase](https://supabase.com) project (free tier works)
-- For WDS users: [whiteport-design-studio](https://github.com/whiteport-collective/whiteport-design-studio) on the `feature/design-space-agent-messaging` branch — contains the agent instructions, hooks config, and Codex guides
-
-### 1. Create a Supabase Project
-
-Go to [supabase.com](https://supabase.com) and create a new project. Note your project reference ID.
-
-### 2. Deploy
-
-```bash
-chmod +x setup.sh
-./setup.sh YOUR-PROJECT-REF
-```
-
-### 3. Set Secrets
-
-In the Supabase dashboard, Edge Functions, Secrets:
-
-| Secret | Required | Purpose |
-|--------|----------|---------|
-| `OPENROUTER_API_KEY` | Yes | Semantic embeddings (text-embedding-3-small) |
-| `VOYAGE_API_KEY` | For visuals | Visual embeddings (voyage-multimodal-3) |
-
-### 4. Connect
-
-Get your project URL and anon key from Supabase dashboard, Settings, API.
-
-**MCP Server (recommended for IDE agents):**
-```bash
-cd mcp-server
-cp .env.example .env
-# Edit .env with your Supabase URL, key, and agent identity
-npm install
-# Add to your IDE's MCP config (see mcp-server/README.md)
+saga → saga-2567
+freya → freya-8403
+codex → codex-1234
 ```
 
-**Python (zero dependencies):**
-```python
-from ds_client import DesignSpace
-ds = DesignSpace()
-ds.capture("Dark backgrounds work better for dashboards", category="successful_pattern")
-results = ds.search("dashboard patterns")
-ds.send_message("freya", "Review the landing page")
-```
+Multiple instances of the same agent can run concurrently with distinct IDs. Messages to `saga` reach all Saga sessions. Messages to `saga-2567` reach only that one.
 
-Copy `hooks/ds_client.py` into your project. No pip install needed.
+## Naming
 
-**Claude Code Hooks:**
-```bash
-# Copy hooks to your Claude Code hooks directory
-# See hooks/ for SessionStart, PostToolUse, and Stop hooks
-```
+- **Design Space** — The WDS-branded version. Design knowledge + agent communication for Whiteport Design Studio projects.
+- **Agent Space** — The standalone/generic version for the BMad Method ecosystem. Same tech, different packaging.
 
-## Edge Functions (7)
-
-### Knowledge Capture
-| Function | Purpose |
-|----------|---------|
-| `capture-design-space` | Store text knowledge with semantic embedding |
-| `capture-visual` | Screenshot + description with dual embeddings |
-| `capture-feedback-pair` | Linked before/after improvement pair |
-
-### Search
-| Function | Purpose |
-|----------|---------|
-| `search-design-space` | Semantic similarity search with filters |
-| `search-visual-similarity` | Find visually similar patterns |
-| `search-preference-patterns` | Red flag detection against rejections |
-
-### Agent Communication
-| Function | Purpose |
-|----------|---------|
-| `agent-messages` | Send, check, respond, register, who-online, mark-read, thread |
-
-## MCP Server Tools (14)
-
-See [mcp-server/README.md](mcp-server/README.md) for full tool documentation.
-
-## Database Schema
-
-### `design_space` table
-Primary knowledge store. Every entry — design insight, visual capture, or agent message — lives here with optional embeddings.
-
-### `agent_presence` table
-Tracks which agents are online, their capabilities, and what they're working on.
-
-## SQL Migrations
-
-Located in `database/supabase/migrations/`. Run in order:
-1. `001_design_space_table.sql` — Main table, pgvector indexes
-2. `002_agent_presence_table.sql` — Agent tracking
-3. `003_rls_policies.sql` — Row Level Security + Realtime
-4. `004_search_functions.sql` — Vector similarity search RPCs
+Both support SQLite (Lite) and Supabase (Team) backends.
 
 ## License
 
