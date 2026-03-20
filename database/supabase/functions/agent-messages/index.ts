@@ -1,4 +1,4 @@
-// agent-messages v20: Unified messaging + auto-instructions on register
+// agent-messages v21: Fix check — direct messages never missed + own messages filtered
 // POST { action: "send" | "check" | "respond" | "register" | "who-online" | "mark-read" | "thread"
 //                | "update-status" | "get-protocol" | "update-protocol" | "ack-protocol" }
 // All entries stored in design_space table (category = "agent_message") — every message is searchable knowledge
@@ -122,28 +122,46 @@ serve(async (req) => {
       // Derive base agent name if session-scoped (e.g. "freya-2567" → "freya")
       const sessionMatch = agent_id.match(/^(.+)-(\d{4})$/);
       const baseAgentId = sessionMatch ? sessionMatch[1] : null;
+      const directIds = baseAgentId ? [agent_id, baseAgentId] : [agent_id];
 
-      // Fetch ALL recent unread messages — no phase filtering, no hiding
-      const { data: allMessages, error } = await supabase
+      // Phase 1: Direct messages to this agent (no limit — never miss a direct message)
+      const { data: directMessages, error: directError } = await supabase
         .from("design_space")
         .select("*")
         .eq("category", "agent_message")
+        .in("metadata->>to_agent", directIds)
+        .order("created_at", { ascending: false });
+
+      if (directError) throw directError;
+
+      // Phase 2: All other recent messages (broadcasts + messages to others)
+      const { data: otherMessages, error: otherError } = await supabase
+        .from("design_space")
+        .select("*")
+        .eq("category", "agent_message")
+        .not("metadata->>to_agent", "in", `(${directIds.map(id => `"${id}"`).join(",")})`)
         .order("created_at", { ascending: false })
         .limit(limit);
 
-      if (error) throw error;
+      if (otherError) throw otherError;
 
-      // Filter: remove already-read and own broadcasts, keep everything else
-      const directIds = baseAgentId ? [agent_id, baseAgentId] : [agent_id];
-      const filtered = (allMessages || []).filter((m: any) => {
-        const alreadyRead = (m.metadata?.read_by || []).includes(agent_id);
-        if (alreadyRead) return false;
-        // Also check base agent ID for read tracking
-        if (baseAgentId && (m.metadata?.read_by || []).includes(baseAgentId)) return false;
-        const isOwnBroadcast = !m.metadata?.to_agent && m.metadata?.from_agent === agent_id;
-        if (isOwnBroadcast) return false;
-        // Also filter own broadcasts from base agent
-        if (baseAgentId && !m.metadata?.to_agent && m.metadata?.from_agent === baseAgentId) return false;
+      // Merge and deduplicate
+      const seen = new Set<string>();
+      const allMessages = [...(directMessages || []), ...(otherMessages || [])].filter((m: any) => {
+        if (seen.has(m.id)) return false;
+        seen.add(m.id);
+        return true;
+      });
+
+      // Filter: remove already-read and own messages (both broadcasts and directed)
+      const filtered = allMessages.filter((m: any) => {
+        const readBy = m.metadata?.read_by || [];
+        if (readBy.includes(agent_id)) return false;
+        if (baseAgentId && readBy.includes(baseAgentId)) return false;
+        // Filter ALL own messages — broadcasts AND directed
+        const fromAgent = m.metadata?.from_agent;
+        if (fromAgent === agent_id) return false;
+        if (baseAgentId && fromAgent === baseAgentId) return false;
         return true;
       });
 
