@@ -1,4 +1,4 @@
-// agent-messages v19: Unified messaging — everything is a message
+// agent-messages v20: Unified messaging + auto-instructions on register
 // POST { action: "send" | "check" | "respond" | "register" | "who-online" | "mark-read" | "thread"
 //                | "update-status" | "get-protocol" | "update-protocol" | "ack-protocol" }
 // All entries stored in design_space table (category = "agent_message") — every message is searchable knowledge
@@ -349,11 +349,42 @@ serve(async (req) => {
         .gte("last_heartbeat", cutoff)
         .neq("agent_id", effectiveAgentId);
 
+      // Auto-include protocol if agent hasn't read the current version
+      let instructions = null;
+      const { data: protocol } = await supabase
+        .from("design_space")
+        .select("*")
+        .eq("category", "protocol")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .single();
+
+      if (protocol) {
+        const readBy = protocol.metadata?.read_by || [];
+        const hasRead = readBy.includes(effectiveAgentId) || (baseAgentId && readBy.includes(baseAgentId));
+        if (!hasRead) {
+          instructions = {
+            content: protocol.content,
+            version: protocol.metadata?.version || 1,
+            updated_at: protocol.updated_at || protocol.created_at,
+          };
+          // Auto-acknowledge: mark as read for this agent
+          if (!readBy.includes(effectiveAgentId)) {
+            readBy.push(effectiveAgentId);
+            await supabase
+              .from("design_space")
+              .update({ metadata: { ...protocol.metadata, read_by: readBy } })
+              .eq("id", protocol.id);
+          }
+        }
+      }
+
       return jsonResponse({
         agent,
         session_id: effectiveAgentId,
         session_code: code,
         online: onlineAgents || [],
+        instructions,
       });
     }
 
