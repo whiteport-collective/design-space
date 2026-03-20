@@ -1,0 +1,17 @@
+{
+  "rules": [
+    {
+      "titlePattern": "dogweek",
+      "project": "dogweek"
+    },
+    {
+      "titlePattern": "whiteport|wds",
+      "project": "whiteport-astro"
+    },
+    {
+      "participantEmail": "client@example.com",
+      "project": "their-project"
+    }
+  ],
+  "default": null
+}
