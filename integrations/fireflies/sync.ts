@@ -63,6 +63,19 @@ async function captureChunk(content: string, meta: ChunkMetadata) {
       components: [],
       source: "fireflies",
       source_file: meta.source_file,
+      metadata: {
+        meeting_id: meta.meeting_id,
+        title: meta.title,
+        date: meta.date,
+        duration: meta.duration,
+        speakers: meta.speakers,
+        participants: meta.participants,
+        chunk_index: meta.chunk_index,
+        total_chunks: meta.total_chunks,
+        is_summary: meta.is_summary,
+        start_time: meta.start_time,
+        end_time: meta.end_time,
+      },
     }),
   });
 
@@ -97,41 +110,25 @@ async function sendNotification(content: string, project: string | null) {
 // Supabase REST base URL (strip /functions/v1 to get the project URL)
 const DS_REST_URL = DS_URL!.replace(/\/functions\/v1\/?$/, "");
 
-async function checkAlreadyProcessed(sourceFile: string): Promise<{ exists: boolean; count: number }> {
-  // Direct Supabase REST query for exact source_file match
-  const url = `${DS_REST_URL}/rest/v1/design_space?source_file=eq.${encodeURIComponent(sourceFile)}&select=id&limit=1`;
-  const response = await fetch(url, {
-    headers: {
-      "Authorization": `Bearer ${DS_KEY}`,
-      "apikey": DS_KEY!,
-    },
-  });
-
-  if (!response.ok) return { exists: false, count: 0 };
-
-  const rows = await response.json();
-  return { exists: rows.length > 0, count: rows.length };
+interface ExistingChunkRow {
+  content: string;
+  metadata?: {
+    chunk_index?: unknown;
+  };
 }
 
-async function countExistingChunks(sourceFile: string): Promise<number> {
-  const url = `${DS_REST_URL}/rest/v1/design_space?source_file=eq.${encodeURIComponent(sourceFile)}&select=id`;
+async function getExistingChunks(sourceFile: string): Promise<ExistingChunkRow[]> {
+  const url = `${DS_REST_URL}/rest/v1/design_space?source_file=eq.${encodeURIComponent(sourceFile)}&select=content,metadata`;
   const response = await fetch(url, {
     headers: {
       "Authorization": `Bearer ${DS_KEY}`,
       "apikey": DS_KEY!,
-      "Prefer": "count=exact",
     },
   });
 
-  if (!response.ok) return 0;
+  if (!response.ok) return [];
 
-  const countHeader = response.headers.get("content-range");
-  if (countHeader) {
-    const match = countHeader.match(/\/(\d+)/);
-    if (match) return parseInt(match[1]);
-  }
-  const rows = await response.json();
-  return rows.length;
+  return await response.json();
 }
 
 async function processTranscript(transcriptId: string) {
@@ -144,20 +141,29 @@ async function processTranscript(transcriptId: string) {
   const speakerNames = transcript.speakers.map(s => s.name);
   const date = new Date(transcript.date).toISOString().split("T")[0];
 
-  // Dedup: check how many chunks already exist for this transcript
-  const existingCount = await countExistingChunks(sourceFile);
-  if (existingCount >= chunks.length) {
+  // Dedup/recovery: match exact stored chunks by chunk index or content.
+  const existingChunks = await getExistingChunks(sourceFile);
+  const storedIndices = new Set<number>();
+  const storedContents = new Set<string>();
+  for (const row of existingChunks) {
+    const idx = row.metadata?.chunk_index;
+    if (typeof idx === "number") storedIndices.add(idx);
+    if (typeof row.content === "string") storedContents.add(row.content);
+  }
+  const isStored = (chunk: ReturnType<typeof parseTranscript>[number]) =>
+    storedIndices.has(chunk.chunkIndex) || storedContents.has(chunk.content);
+
+  if (chunks.every(isStored)) {
     console.log(`  Skipped (all ${chunks.length} chunks already stored): ${transcriptId}`);
     return 0;
   }
-  if (existingCount > 0) {
-    console.log(`  Partial: ${existingCount}/${chunks.length} chunks exist, storing remaining...`);
+  if (existingChunks.length > 0) {
+    console.log(`  Partial: ${existingChunks.length}/${chunks.length} chunks exist, storing remaining...`);
   }
 
   let stored = 0;
   for (const chunk of chunks) {
-    // Skip chunks that might already exist (by index in a partial write)
-    if (existingCount > 0 && chunk.chunkIndex < existingCount) {
+    if (isStored(chunk)) {
       continue;
     }
 

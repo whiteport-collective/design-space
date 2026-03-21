@@ -7,8 +7,8 @@ export interface FirefliesSentence {
   speaker_name: string;
   text: string;
   raw_text: string;
-  start_time: number;
-  end_time: number;
+  start_time: number | string;
+  end_time: number | string;
   sentiment: string;
   ai_filters: {
     task: boolean;

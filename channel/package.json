@@ -1,0 +1,13 @@
+{
+  "name": "@design-space/channel",
+  "version": "1.0.0",
+  "description": "Design Space channel plugin for Claude Code — real-time agent messages and meeting transcripts",
+  "main": "design-space.ts",
+  "scripts": {
+    "start": "bun design-space.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "@supabase/supabase-js": "^2.49.0"
+  }
+}

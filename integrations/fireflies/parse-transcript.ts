@@ -22,6 +22,11 @@ interface SpeakerBlock {
 
 const MAX_CHUNK_CHARS = 3200; // ~800 tokens
 
+function normalizeTime(value: number | string | null | undefined): number {
+  const numeric = typeof value === "string" ? Number(value) : value;
+  return Number.isFinite(numeric) ? numeric : 0;
+}
+
 function groupBySpeaker(sentences: FirefliesSentence[]): SpeakerBlock[] {
   const blocks: SpeakerBlock[] = [];
   let current: SpeakerBlock | null = null;
@@ -29,14 +34,14 @@ function groupBySpeaker(sentences: FirefliesSentence[]): SpeakerBlock[] {
   for (const s of sentences) {
     if (current && current.speaker === s.speaker_name) {
       current.sentences.push(s);
-      current.endTime = s.end_time;
+      current.endTime = normalizeTime(s.end_time);
     } else {
       if (current) blocks.push(current);
       current = {
         speaker: s.speaker_name,
         sentences: [s],
-        startTime: s.start_time,
-        endTime: s.end_time,
+        startTime: normalizeTime(s.start_time),
+        endTime: normalizeTime(s.end_time),
       };
     }
   }
@@ -67,6 +72,10 @@ export function parseTranscript(transcript: FirefliesTranscript): TranscriptChun
   const preamble = buildPreamble(transcript);
   const speakerNames = [...new Set(transcript.speakers.map(s => s.name))];
   const keywords = transcript.summary?.keywords ?? [];
+  const transcriptEndTime =
+    transcript.sentences?.length
+      ? normalizeTime(transcript.sentences[transcript.sentences.length - 1].end_time)
+      : Math.round(transcript.duration * 60);
   let chunkIndex = 0;
 
   // Summary chunk first (highest value for search)
@@ -98,7 +107,7 @@ export function parseTranscript(transcript: FirefliesTranscript): TranscriptChun
         topics: keywords,
         speakers: speakerNames,
         startTime: 0,
-        endTime: transcript.duration,
+        endTime: transcriptEndTime,
         isSummary: true,
         chunkIndex: chunkIndex++,
       });

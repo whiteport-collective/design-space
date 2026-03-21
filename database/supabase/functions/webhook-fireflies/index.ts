@@ -63,8 +63,8 @@ async function verifySignature(body: string, signature: string | null, secret: s
 interface Sentence {
   speaker_name: string;
   text: string;
-  start_time: number;
-  end_time: number;
+  start_time: number | string;
+  end_time: number | string;
 }
 
 interface Speaker {
@@ -124,6 +124,11 @@ async function fetchTranscript(apiKey: string, transcriptId: string): Promise<Tr
 
 const MAX_CHUNK_CHARS = 3200;
 
+function normalizeTime(value: number | string | null | undefined): number {
+  const numeric = typeof value === "string" ? Number(value) : value;
+  return Number.isFinite(numeric) ? numeric : 0;
+}
+
 interface Chunk {
   content: string;
   topics: string[];
@@ -146,6 +151,10 @@ function chunkTranscript(transcript: Transcript): Chunk[] {
   const preamble = buildPreamble(transcript);
   const speakerNames = [...new Set(transcript.speakers.map(s => s.name))];
   const keywords = transcript.summary?.keywords ?? [];
+  const transcriptEndTime =
+    transcript.sentences?.length
+      ? normalizeTime(transcript.sentences[transcript.sentences.length - 1].end_time)
+      : Math.round(transcript.duration * 60);
   let idx = 0;
 
   // Summary chunk
@@ -167,7 +176,7 @@ function chunkTranscript(transcript: Transcript): Chunk[] {
       topics: keywords,
       speakers: speakerNames,
       startTime: 0,
-      endTime: transcript.duration,
+      endTime: transcriptEndTime,
       isSummary: true,
       chunkIndex: idx++,
     });
@@ -179,7 +188,7 @@ function chunkTranscript(transcript: Transcript): Chunk[] {
 
   let currentParts = [preamble, ""];
   let currentLen = preamble.length;
-  let chunkStart = sentences[0].start_time;
+  let chunkStart = normalizeTime(sentences[0].start_time);
   let chunkEnd = 0;
   const chunkSpeakers = new Set<string>();
   let prevSpeaker = "";
@@ -215,7 +224,7 @@ function chunkTranscript(transcript: Transcript): Chunk[] {
     }
     prevSpeaker = s.speaker_name;
     blockText += (blockText ? " " : "") + s.text;
-    chunkEnd = s.end_time;
+    chunkEnd = normalizeTime(s.end_time);
   }
   emitBlock();
 
@@ -323,7 +332,7 @@ serve(async (req) => {
     const sourceFile = `fireflies:${meetingId}`;
     const { data: existing } = await supabase
       .from("design_space")
-      .select("id, metadata")
+      .select("id, content, metadata")
       .eq("source_file", sourceFile);
 
     // Fetch full transcript from Fireflies
@@ -339,23 +348,25 @@ serve(async (req) => {
     const speakerNames = transcript.speakers.map(s => s.name);
 
     // Full duplicate — all chunks already stored
-    const existingCount = existing?.length ?? 0;
-    if (existingCount >= chunks.length) {
-      return jsonResponse({ skipped: true, reason: "Transcript already processed", meetingId });
-    }
-
-    // Find which chunk indices are already stored (for partial write recovery)
     const storedIndices = new Set<number>();
+    const storedContents = new Set<string>();
     for (const row of existing ?? []) {
       const idx = row.metadata?.chunk_index;
       if (typeof idx === "number") storedIndices.add(idx);
+      if (typeof row.content === "string") storedContents.add(row.content);
+    }
+    const isStored = (chunk: Chunk) =>
+      storedIndices.has(chunk.chunkIndex) || storedContents.has(chunk.content);
+
+    if (chunks.every(isStored)) {
+      return jsonResponse({ skipped: true, reason: "Transcript already processed", meetingId });
     }
 
     // Store missing chunks
     const stored: string[] = [];
     const failed: number[] = [];
     for (const chunk of chunks) {
-      if (storedIndices.has(chunk.chunkIndex)) continue;
+      if (isStored(chunk)) continue;
 
       const embedding = await getEmbedding(chunk.content);
 

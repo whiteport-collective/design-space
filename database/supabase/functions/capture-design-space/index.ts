@@ -1,5 +1,5 @@
 // capture-design-space: Store design knowledge with semantic embedding
-// POST { content, category, project, designer, client, topics, components, source, source_file }
+// POST { content, category, project, designer, client, topics, components, source, source_file, metadata }
 
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -41,7 +41,7 @@ serve(async (req) => {
   try {
     const {
       content, category = "general", project, designer, client,
-      topics = [], components = [], source, source_file,
+      topics = [], components = [], source, source_file, metadata,
     } = await req.json();
 
     if (!content) {
@@ -59,20 +59,26 @@ serve(async (req) => {
     const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const supabase = createClient(supabaseUrl, supabaseKey);
 
+    const insertPayload: Record<string, unknown> = {
+      content,
+      category,
+      project,
+      designer,
+      client,
+      topics,
+      components,
+      source,
+      source_file,
+      embedding,
+    };
+
+    if (metadata && typeof metadata === "object") {
+      insertPayload.metadata = metadata;
+    }
+
     const { data: entry, error } = await supabase
       .from("design_space")
-      .insert({
-        content,
-        category,
-        project,
-        designer,
-        client,
-        topics,
-        components,
-        source,
-        source_file,
-        embedding,
-      })
+      .insert(insertPayload)
       .select()
       .single();
 
