@@ -315,7 +315,7 @@ function launchSession({ agentName, agentCli, prompt, workDir, project, threadId
   // Wait for the agent to render its UI, then type the prompt as if the user typed it.
   if (prompt) {
     let injected = false;
-    const promptListener = (data) => {
+    const promptDisposable = pty.onData((data) => {
       // Wait for the input prompt indicator (❯ for Claude, $ for others)
       if (!injected && (data.includes('❯') || data.includes('$') || data.includes('>'))) {
         injected = true;
@@ -325,10 +325,9 @@ function launchSession({ agentName, agentCli, prompt, workDir, project, threadId
           pty.write('\r');
           log(`Injected task prompt into ${agentName} session`);
         }, 500);
-        pty.off('data', promptListener);
+        promptDisposable.dispose();
       }
-    };
-    pty.onData(promptListener);
+    });
 
     // Fallback: if no prompt detected in 30s, inject anyway
     setTimeout(() => {
