@@ -283,7 +283,9 @@ function launchSession({ agentName, agentCli, prompt, workDir, project, threadId
 
   // Spawn via node-pty — gives us a real PTY (full interactive UI)
   // AND stdin/stdout handles (so we can inject messages and observe output)
-  const pty = ptySpawn(cli.command, args, {
+  // On Windows, node-pty needs cmd.exe as shell to resolve .cmd scripts in PATH
+  const fullCmd = [cli.command, ...args].map(a => a.includes(' ') ? `"${a}"` : a).join(' ');
+  const pty = ptySpawn('cmd.exe', ['/c', fullCmd], {
     name: 'xterm-256color',
     cols: 120,
     rows: 40,
