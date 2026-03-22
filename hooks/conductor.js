@@ -403,6 +403,14 @@ function handleRealtimeMessage(payload) {
     return;
   }
 
+  // If from an agent we launched (active session), skip — don't react to our own children
+  for (const [, session] of activeSessions) {
+    if (fromAgent === session.agentName || fromAgent.startsWith(session.agentName + '-')) {
+      log(`Ignoring message from own child session: ${fromAgent}`);
+      return;
+    }
+  }
+
   // --- Check if we have an active session for this thread ---
   // In terminal mode we don't have stdin access — the agent reads Design Space directly.
   // Just log and notify, don't try to inject.
