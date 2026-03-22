@@ -510,8 +510,15 @@ function handleRealtimeMessage(payload) {
   // Claim the message
   claimMessage(msg.id);
 
-  // Determine agent CLI and working directory
-  const agentCli = meta.agent_cli || agentsConfig.default_agent;
+  // Determine agent CLI from to_agent name.
+  // Map agent names to CLI configs: "codex" → "codex-cli", "saga" → "claude", etc.
+  // If the agent name matches a CLI config key, use it directly.
+  // Otherwise fall back to default.
+  const agentCli = agentsConfig.agents[toAgent]
+    ? toAgent
+    : agentsConfig.agents[`${toAgent}-cli`]
+      ? `${toAgent}-cli`
+      : agentsConfig.default_agent;
   const workDir = meta.working_directory || null;
   const project = msg.project || meta.project || null;
 
