@@ -1,0 +1,38 @@
+{
+  "agents": {
+    "claude": {
+      "command": "claude",
+      "args": ["--dangerously-skip-permissions"],
+      "prompt_flag": null,
+      "interactive": true,
+      "note": "Claude Code: interactive, skip permissions for autonomous Conductor sessions"
+    },
+    "claude-headless": {
+      "command": "claude",
+      "args": ["-p"],
+      "prompt_flag": null,
+      "interactive": false,
+      "note": "Claude Code non-interactive: -p prints output and exits"
+    },
+    "codex-cli": {
+      "command": "codex",
+      "args": [],
+      "prompt_flag": "--prompt",
+      "interactive": true,
+      "note": "OpenAI Codex CLI — verify install with 'codex --version'"
+    },
+    "aider": {
+      "command": "aider",
+      "args": [],
+      "prompt_flag": "--message",
+      "interactive": true
+    },
+    "gemini": {
+      "command": "gemini",
+      "args": [],
+      "prompt_flag": "--prompt",
+      "interactive": true
+    }
+  },
+  "default_agent": "claude"
+}
