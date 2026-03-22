@@ -390,10 +390,16 @@ function launchSession({ agentName, agentCli, prompt, workDir, project, threadId
   return session;
 }
 
-// Inject a message into a running session's PTY
-function injectMessage(session, fromAgent, message) {
-  const banner = `\n\r\x1b[1;36m[Conductor] Message from ${fromAgent}:\x1b[0m\n\r${message}\n\r`;
-  session.pty.write(banner);
+// Nudge a running session to check Design Space.
+// Instead of injecting raw message text (which fights with terminal rendering),
+// we type /u — the agent's own Design Space check command. The agent handles
+// the message in its own way, when it's ready.
+function nudgeSession(session, fromAgent) {
+  // Wait a moment, then type /u + Enter at the prompt
+  setTimeout(() => {
+    session.pty.write('/u\r');
+    log(`Nudged ${session.agentName} to check Design Space (message from ${fromAgent})`);
+  }, 1000);
 }
 
 // ---------------------------------------------------------------------------
@@ -459,8 +465,7 @@ function handleRealtimeMessage(payload) {
     }
   }
   if (existingSession && existingSession.pty) {
-    injectMessage(existingSession, fromAgent, content.substring(0, 500));
-    log(`Injected message into ${existingSession.agentName} session`);
+    nudgeSession(existingSession, fromAgent);
     tg(`[DS → ${existingSession.agentName}@${MACHINE}] ${fromAgent}: ${content.substring(0, 100)}`);
     return;
   }
