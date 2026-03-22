@@ -391,15 +391,13 @@ function launchSession({ agentName, agentCli, prompt, workDir, project, threadId
   return session;
 }
 
-// Nudge a running session to check Design Space.
-// Instead of injecting raw message text (which fights with terminal rendering),
-// we type /u — the agent's own Design Space check command. The agent handles
-// the message in its own way, when it's ready.
+// Nudge a running session about a new Design Space message.
+// Uses /btw (Claude Code's side-channel) so the agent sees the notification
+// without interrupting its current work. It can run /u when ready.
 function nudgeSession(session, fromAgent) {
-  // Wait a moment, then type /u + Enter at the prompt
   setTimeout(() => {
-    session.pty.write('/u\r');
-    log(`Nudged ${session.agentName} to check Design Space (message from ${fromAgent})`);
+    session.pty.write(`/btw You have a new message from ${fromAgent} in Design Space. Run /u when ready.\r`);
+    log(`Nudged ${session.agentName} about message from ${fromAgent}`);
   }, 1000);
 }
 
