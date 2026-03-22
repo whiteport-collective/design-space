@@ -253,7 +253,7 @@ async function checkUnread() {
 // Session launcher
 // ---------------------------------------------------------------------------
 
-function launchSession({ agentName, agentCli, prompt, workDir, project, threadId }) {
+function launchSession({ agentName, agentCli, prompt, workDir, project, threadId, fromAgent, content }) {
   const cli = agentsConfig.agents[agentCli] || agentsConfig.agents[agentsConfig.default_agent];
   if (!cli) {
     log(`Unknown agent CLI: ${agentCli}`);
@@ -282,6 +282,20 @@ function launchSession({ agentName, agentCli, prompt, workDir, project, threadId
 
   const batContent = [
     '@echo off',
+    'echo.',
+    `echo ============================================================`,
+    `echo   THE CONDUCTOR - New Session`,
+    `echo ============================================================`,
+    `echo   Agent: ${agentName}`,
+    `echo   From: ${fromAgent || 'unknown'}`,
+    `echo   Machine: ${MACHINE}`,
+    `echo   Working dir: ${cwd}`,
+    `echo   Thread: ${threadId}`,
+    'echo.',
+    `echo   Task: ${(content || '').substring(0, 200).replace(/"/g, '').replace(/\n/g, ' ')}`,
+    'echo.',
+    `echo ============================================================`,
+    'echo.',
     `cd /d ${cwd}`,
     cmdParts.join(' '),
   ].join('\r\n');
@@ -437,6 +451,8 @@ function handleRealtimeMessage(payload) {
     workDir,
     project,
     threadId,
+    fromAgent,
+    content,
   });
 }
 
