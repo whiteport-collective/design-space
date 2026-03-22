@@ -267,8 +267,9 @@ function launchSession({ agentName, agentCli, prompt, workDir, project, threadId
   log(`Launching ${agentName} via ${cli.command} in ${cwd}`);
   tg(`*${MACHINE}:* Starting ${agentName} session...\n_${(prompt || '').substring(0, 120)}_`);
 
-  // Build args — no prompt here. We inject it via PTY after startup
-  // to avoid Windows cmd.exe escaping issues with complex strings.
+  // Build the command. For "prompt" activation agents (Codex, aider),
+  // the task is passed via a launcher script to avoid cmd.exe escaping issues.
+  // For "slash" activation agents (Claude Code), launch bare — prompt injected via PTY.
   const args = [...cli.args];
 
   // Strip CLAUDECODE env var so spawned sessions don't think they're nested
@@ -278,10 +279,27 @@ function launchSession({ agentName, agentCli, prompt, workDir, project, threadId
   cleanEnv.AGENT_ID = agentName;
   cleanEnv.AGENT_PROJECT = project || '';
 
-  // Spawn via node-pty — gives us a real PTY (full interactive UI)
-  // AND stdin/stdout handles (so we can inject messages and observe output)
-  // On Windows, node-pty needs cmd.exe as shell to resolve .cmd scripts in PATH
-  const fullCmd = [cli.command, ...args].join(' ');
+  let fullCmd;
+  if (activation === 'prompt' && prompt) {
+    // Write a launcher script to pass the prompt cleanly
+    const launcherPath = join(__dirname, `.conductor-${Date.now()}.bat`);
+    const cmdParts = [cli.command, ...args];
+    if (cli.prompt_flag) {
+      cmdParts.push(cli.prompt_flag, `"${prompt.replace(/"/g, '')}"`);
+    } else {
+      cmdParts.push(`"${prompt.replace(/"/g, '')}"`);
+    }
+    const batContent = `@echo off\r\ncd /d ${cwd}\r\n${cmdParts.join(' ')}`;
+    writeFileSync(launcherPath, batContent);
+    fullCmd = launcherPath;
+    // Clean up after launch
+    setTimeout(() => { try { unlinkSync(launcherPath); } catch (_) {} }, 60000);
+  } else {
+    // Slash activation — launch bare, prompt typed via PTY
+    fullCmd = [cli.command, ...args].join(' ');
+  }
+
+  // Spawn via node-pty
   const pty = ptySpawn('cmd.exe', ['/c', fullCmd], {
     name: 'xterm-256color',
     cols: 120,
@@ -315,11 +333,10 @@ function launchSession({ agentName, agentCli, prompt, workDir, project, threadId
     session.lastOutputAt = Date.now();
   });
 
-  // --- Inject the initial prompt after the agent UI is ready ---
-  // Wait for the agent to render its UI, then type the activation command.
-  // The prompt is the persona activation (e.g. /saga). The actual task is in
-  // Design Space — the persona activation will check for it.
-  if (prompt) {
+  // --- Inject the persona activation for slash-mode agents ---
+  // For "slash" activation (Claude Code): wait for UI, then type /saga etc.
+  // For "prompt" activation (Codex, aider): task was already passed as CLI arg.
+  if (activation === 'slash' && prompt) {
     let injected = false;
     const promptDisposable = pty.onData((data) => {
       // Wait for the input prompt indicator (❯ for Claude, $ for others)
@@ -498,13 +515,20 @@ function handleRealtimeMessage(payload) {
   const workDir = meta.working_directory || null;
   const project = msg.project || meta.project || null;
 
-  // The initial prompt activates the agent persona and tells it to register.
-  // The persona activation command (e.g. /saga, /freya) loads the full identity.
-  // Then /u checks Design Space for the actual task.
-  const agentSlash = toAgent ? `/${toAgent}` : '';
-  const prompt = agentSlash
-    ? `${agentSlash}`
-    : `You were launched by The Conductor on ${MACHINE}. Register with Design Space and run /u to check your messages.`;
+  // Determine activation mode from agent config:
+  // - "slash": Claude Code — type /saga, /freya etc. to load persona, task is in Design Space
+  // - "prompt": Codex, aider, etc. — pass the task content directly as the prompt
+  const cli2 = agentsConfig.agents[agentCli] || agentsConfig.agents[agentsConfig.default_agent];
+  const activation = cli2?.activation || 'prompt';
+
+  let prompt;
+  if (activation === 'slash' && toAgent) {
+    // Claude Code: activate persona, agent finds its own task in Design Space
+    prompt = `/${toAgent}`;
+  } else {
+    // Other CLIs: pass the task directly
+    prompt = content || `Check Design Space for your messages. You have a ${messageType} from ${fromAgent}.`;
+  }
 
   launchSession({
     agentName: toAgent || 'agent',

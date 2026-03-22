@@ -5,33 +5,40 @@
       "args": [],
       "prompt_flag": null,
       "interactive": true,
-      "note": "Claude Code: interactive mode, prompt is positional. Trust folders manually first."
+      "activation": "slash",
+      "note": "Claude Code: persona via slash command (/saga, /freya), task via Design Space"
     },
     "claude-headless": {
       "command": "claude",
       "args": ["-p"],
       "prompt_flag": null,
       "interactive": false,
-      "note": "Claude Code non-interactive: -p prints output and exits"
+      "activation": "prompt",
+      "note": "Claude Code non-interactive: task as positional arg"
     },
     "codex-cli": {
       "command": "npx",
       "args": ["@openai/codex"],
       "prompt_flag": null,
       "interactive": true,
-      "note": "OpenAI Codex CLI — prompt is positional argument"
+      "activation": "prompt",
+      "note": "OpenAI Codex CLI: task as positional arg, no slash commands"
     },
     "aider": {
       "command": "aider",
       "args": [],
       "prompt_flag": "--message",
-      "interactive": true
+      "interactive": true,
+      "activation": "prompt",
+      "note": "aider: task via --message flag"
     },
     "gemini": {
       "command": "gemini",
       "args": [],
       "prompt_flag": "--prompt",
-      "interactive": true
+      "interactive": true,
+      "activation": "prompt",
+      "note": "Gemini CLI: task via --prompt flag"
     }
   },
   "default_agent": "claude"
