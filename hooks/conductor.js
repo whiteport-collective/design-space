@@ -578,14 +578,8 @@ tg(`*${MACHINE} online* — The Conductor is listening.`);
           log(`  → ${meta.from_agent || '?'} → ${meta.to_agent || 'broadcast'}: ${(msg.content || '').substring(0, 80)}`);
         }
 
-        // Mark directed messages as read so they don't pile up for the next restart
-        const messageIds = directed.map(m => m.id);
-        await postToDesignSpace({
-          action: 'mark-read',
-          message_ids: messageIds,
-          agent_id: `conductor-${MACHINE}`,
-        });
-        log(`Marked ${messageIds.length} message(s) as read`);
+        // Don't mark as read — the Conductor is not the recipient.
+        // The agent marks messages as read when it actually handles them.
       }
     }
   } catch (err) {
