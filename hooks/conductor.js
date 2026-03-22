@@ -440,6 +440,19 @@ function watchdog() {
 // ---------------------------------------------------------------------------
 
 function handleRealtimeMessage(payload) {
+  // Clean up any dead sessions before processing
+  for (const [key, session] of activeSessions) {
+    try {
+      // Check if PTY process is still alive
+      if (session.pty && session.pty.pid) {
+        process.kill(session.pty.pid, 0); // signal 0 = check if alive
+      }
+    } catch (_) {
+      log(`Cleaned up dead session: ${session.agentName}`);
+      activeSessions.delete(key);
+    }
+  }
+
   const msg = payload.new;
   const meta = msg.metadata || {};
   const fromAgent = meta.from_agent || 'unknown';
