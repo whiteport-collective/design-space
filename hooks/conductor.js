@@ -557,12 +557,21 @@ tg(`*${MACHINE} online* — The Conductor is listening.`);
           && (meta.to_agent || target);
       });
       if (directed.length > 0) {
-        log(`Found ${directed.length} unread message(s) from while offline (report only — use Telegram or send a new message to trigger a session)`);
+        log(`Found ${directed.length} unread message(s) from while offline`);
         tg(`*${MACHINE}:* ${directed.length} message(s) arrived while offline`);
         for (const msg of directed) {
           const meta = msg.metadata || {};
           log(`  → ${meta.from_agent || '?'} → ${meta.to_agent || 'broadcast'}: ${(msg.content || '').substring(0, 80)}`);
         }
+
+        // Mark all as read so they don't pile up for the next restart
+        const messageIds = result.messages.map(m => m.id);
+        await postToDesignSpace({
+          action: 'mark-read',
+          message_ids: messageIds,
+          agent_id: `conductor-${MACHINE}`,
+        });
+        log(`Marked ${messageIds.length} message(s) as read`);
       }
     }
   } catch (err) {
