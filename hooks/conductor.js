@@ -146,7 +146,7 @@ function handleTelegramInput(text) {
     const last = Array.from(activeSessions.values()).pop();
     if (last) {
       log(`Killing session ${last.agentName} (Telegram /stop)`);
-      last.process.kill();
+      last.pty.kill();
       tg(`Stopped ${last.agentName} session on ${MACHINE}`);
     } else {
       tg(`No active sessions on ${MACHINE}`);
@@ -179,8 +179,8 @@ function handleTelegramInput(text) {
 
   // Free text — pipe to most recent active session
   const last = Array.from(activeSessions.values()).pop();
-  if (last && last.process.stdin.writable) {
-    last.process.stdin.write(trimmed + '\n');
+  if (last && last.pty) {
+    last.pty.write(trimmed + '\r');
     log(`[Telegram → ${last.agentName}] ${trimmed.substring(0, 80)}`);
   } else {
     tg(`No active session to send to. Use \`@${MACHINE} start <agent> for <project>\` to launch one.`);
@@ -346,14 +346,16 @@ function launchSession({ agentName, agentCli, prompt, workDir, project, threadId
     // (for MVP: last launched session gets keyboard input)
     process.stdin.setRawMode(true);
     process.stdin.resume();
-    process.stdin.on('data', (data) => {
+    const stdinHandler = (data) => {
       // Ctrl+C twice = kill session
       if (data.toString() === '\x03') {
         pty.write('\x03');
       } else {
         pty.write(data.toString());
       }
-    });
+    };
+    process.stdin.on('data', stdinHandler);
+    session.stdinHandler = stdinHandler;
   }
 
   // --- Session end ---
@@ -375,8 +377,11 @@ function launchSession({ agentName, agentCli, prompt, workDir, project, threadId
 
     activeSessions.delete(threadId);
 
-    // Restore stdin
+    // Remove stdin listener and restore stdin
     if (process.stdin.isTTY) {
+      if (session.stdinHandler) {
+        process.stdin.removeListener('data', session.stdinHandler);
+      }
       process.stdin.setRawMode(false);
       process.stdin.pause();
     }
@@ -563,8 +568,8 @@ tg(`*${MACHINE} online* — The Conductor is listening.`);
           log(`  → ${meta.from_agent || '?'} → ${meta.to_agent || 'broadcast'}: ${(msg.content || '').substring(0, 80)}`);
         }
 
-        // Mark all as read so they don't pile up for the next restart
-        const messageIds = result.messages.map(m => m.id);
+        // Mark directed messages as read so they don't pile up for the next restart
+        const messageIds = directed.map(m => m.id);
         await postToDesignSpace({
           action: 'mark-read',
           message_ids: messageIds,
@@ -647,7 +652,7 @@ process.on('SIGINT', () => {
   supabase.removeAllChannels();
   // Kill any active sessions
   for (const [, session] of activeSessions) {
-    session.process.kill();
+    session.pty.kill();
   }
   setTimeout(() => process.exit(0), 1000); // Give Telegram message time to send
 });
