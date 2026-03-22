@@ -266,16 +266,9 @@ function launchSession({ agentName, agentCli, prompt, workDir, project, threadId
   log(`Launching ${agentName} via ${cli.command} in ${cwd}`);
   tg(`*${MACHINE}:* Starting ${agentName} session...\n_${(prompt || '').substring(0, 120)}_`);
 
-  // Build args
+  // Build args — no prompt here. We inject it via PTY after startup
+  // to avoid Windows cmd.exe escaping issues with complex strings.
   const args = [...cli.args];
-  if (prompt) {
-    if (cli.prompt_flag) {
-      args.push(cli.prompt_flag, prompt);
-    } else {
-      // Claude Code: prompt is positional
-      args.push(prompt);
-    }
-  }
 
   // Strip CLAUDECODE env var so spawned sessions don't think they're nested
   const cleanEnv = { ...process.env };
@@ -284,7 +277,7 @@ function launchSession({ agentName, agentCli, prompt, workDir, project, threadId
   // Spawn via node-pty — gives us a real PTY (full interactive UI)
   // AND stdin/stdout handles (so we can inject messages and observe output)
   // On Windows, node-pty needs cmd.exe as shell to resolve .cmd scripts in PATH
-  const fullCmd = [cli.command, ...args].map(a => a.includes(' ') ? `"${a}"` : a).join(' ');
+  const fullCmd = [cli.command, ...args].join(' ');
   const pty = ptySpawn('cmd.exe', ['/c', fullCmd], {
     name: 'xterm-256color',
     cols: 120,
@@ -317,6 +310,36 @@ function launchSession({ agentName, agentCli, prompt, workDir, project, threadId
     session.lineCount += (data.match(/\n/g) || []).length;
     session.lastOutputAt = Date.now();
   });
+
+  // --- Inject the initial prompt after the agent UI is ready ---
+  // Wait for the agent to render its UI, then type the prompt as if the user typed it.
+  if (prompt) {
+    let injected = false;
+    const promptListener = (data) => {
+      // Wait for the input prompt indicator (❯ for Claude, $ for others)
+      if (!injected && (data.includes('❯') || data.includes('$') || data.includes('>'))) {
+        injected = true;
+        // Small delay to let the UI settle
+        setTimeout(() => {
+          pty.write(content || prompt);
+          pty.write('\r');
+          log(`Injected task prompt into ${agentName} session`);
+        }, 500);
+        pty.off('data', promptListener);
+      }
+    };
+    pty.onData(promptListener);
+
+    // Fallback: if no prompt detected in 30s, inject anyway
+    setTimeout(() => {
+      if (!injected) {
+        injected = true;
+        pty.write(content || prompt);
+        pty.write('\r');
+        log(`Injected task prompt into ${agentName} session (fallback)`);
+      }
+    }, 30000);
+  }
 
   // --- Keyboard input → PTY (user can type in Conductor's terminal) ---
   if (process.stdin.isTTY) {
@@ -419,9 +442,18 @@ function handleRealtimeMessage(payload) {
     }
   }
 
-  // --- Check if we have an active session for this thread ---
-  // Inject the message directly into the running PTY session
-  const existingSession = activeSessions.get(threadId);
+  // --- Check if we have an active session for this agent ---
+  // Match by agent name (not just thread) — if a claude session is running,
+  // any message to "claude" gets injected into it.
+  let existingSession = activeSessions.get(threadId);
+  if (!existingSession) {
+    for (const [, session] of activeSessions) {
+      if (session.agentName === toAgent) {
+        existingSession = session;
+        break;
+      }
+    }
+  }
   if (existingSession && existingSession.pty) {
     injectMessage(existingSession, fromAgent, content.substring(0, 500));
     log(`Injected message into ${existingSession.agentName} session`);
