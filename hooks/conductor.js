@@ -19,7 +19,7 @@
 
 import { createClient } from '@supabase/supabase-js';
 import { spawn, execSync } from 'child_process';
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, unlinkSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -265,21 +265,35 @@ function launchSession({ agentName, agentCli, prompt, workDir, project, threadId
   log(`Launching ${agentName} via ${cli.command} in ${cwd}`);
   tg(`*${MACHINE}:* Starting ${agentName} session...\n_${(prompt || '').substring(0, 120)}_`);
 
-  // Build the full command string for the agent
+  // Write a per-session launcher script to avoid cmd.exe escaping issues.
+  // This is the cleanest way to pass complex prompts on Windows.
+  const sessionId = `conductor-${Date.now()}`;
+  const launcherPath = join(__dirname, `${sessionId}.bat`);
+
   const cmdParts = [cli.command, ...cli.args];
   if (prompt) {
     if (cli.prompt_flag) {
-      cmdParts.push(cli.prompt_flag, `"${prompt.replace(/"/g, '\\"')}"`);
+      cmdParts.push(cli.prompt_flag, `"${prompt}"`);
     } else {
-      // Positional argument (e.g. claude "prompt here")
-      cmdParts.push(`"${prompt.replace(/"/g, '\\"')}"`);
+      // Claude Code: prompt is positional, --append-system-prompt for context
+      cmdParts.push(`--append-system-prompt "${prompt}"`);
     }
   }
-  const fullCmd = cmdParts.join(' ');
+
+  const batContent = [
+    '@echo off',
+    `cd /d ${cwd}`,
+    cmdParts.join(' '),
+  ].join('\r\n');
+  writeFileSync(launcherPath, batContent);
+
+  // Clean up launcher after session starts
+  setTimeout(() => {
+    try { unlinkSync(launcherPath); } catch (_) {}
+  }, 60000);
 
   // Open a visible Windows Terminal window with the agent session
-  // This gives the full interactive UI experience
-  const wtArgs = ['-d', cwd, '--title', `${agentName} [Conductor]`, '--', 'cmd', '/c', fullCmd];
+  const wtArgs = ['-d', cwd, '--title', `${agentName} [Conductor]`, '--', launcherPath];
 
   const proc = spawn('wt.exe', wtArgs, {
     stdio: 'ignore',
@@ -295,13 +309,40 @@ function launchSession({ agentName, agentCli, prompt, workDir, project, threadId
     project,
     threadId,
     startedAt: Date.now(),
+    registered: false,
   };
 
   activeSessions.set(threadId, session);
 
-  // We don't have stdout access in terminal mode — the agent runs in its own window.
-  // Observation and stdin injection are post-MVP features that require piped mode.
-  // For now, the Conductor dispatches and tracks which sessions are active.
+  // Ping Design Space to check if the agent registered.
+  // If it doesn't show up after a few attempts, something went wrong.
+  let attempts = 0;
+  const maxAttempts = 12; // 12 x 10s = 2 minutes
+  const pingInterval = setInterval(async () => {
+    attempts++;
+    try {
+      const result = await postToDesignSpace({
+        action: 'who-online',
+        agent_id: `conductor-${MACHINE}`,
+      });
+      const agents = result?.online || result?.agents || [];
+      const found = agents.find(a =>
+        a.agent_name === agentName || a.agent_id?.startsWith(agentName)
+      );
+      if (found) {
+        session.registered = true;
+        log(`${agentName} registered as ${found.agent_id} — session is alive`);
+        tg(`*${MACHINE}:* ${agentName} is online as ${found.agent_id}`);
+        clearInterval(pingInterval);
+      } else if (attempts >= maxAttempts) {
+        log(`${agentName} did not register after ${maxAttempts * 10}s — session may have failed`);
+        tg(`*${MACHINE}:* WARNING — ${agentName} launched but never registered with Design Space`);
+        clearInterval(pingInterval);
+      }
+    } catch (err) {
+      // Silent — keep trying
+    }
+  }, 10000);
 
   return session;
 }
@@ -349,12 +390,11 @@ function handleRealtimeMessage(payload) {
   }
 
   // --- Check if we have an active session for this thread ---
+  // In terminal mode we don't have stdin access — the agent reads Design Space directly.
+  // Just log and notify, don't try to inject.
   const existingSession = activeSessions.get(threadId);
-  if (existingSession && existingSession.process.stdin.writable) {
-    // Inject into running session
-    const injection = `\n[Design Space] ${fromAgent}: ${content}\n`;
-    existingSession.process.stdin.write(injection);
-    log(`Injected message into ${existingSession.agentName} session`);
+  if (existingSession) {
+    log(`Message for active ${existingSession.agentName} session (agent will pick it up from Design Space)`);
     tg(`[DS → ${existingSession.agentName}@${MACHINE}] ${fromAgent}: ${content.substring(0, 100)}`);
     return;
   }
@@ -381,16 +421,14 @@ function handleRealtimeMessage(payload) {
   const workDir = meta.working_directory || null;
   const project = msg.project || meta.project || null;
 
-  // Build the prompt
-  const handoffContext = meta.handoff_context || '';
+  // Keep the prompt minimal. The agent's identity comes from the repo
+  // (CLAUDE.md, .codex/, activation files). The Conductor is just the alarm clock.
   const prompt = [
-    toAgent ? `You are ${toAgent}.` : '',
-    `You have a message from ${fromAgent}:`,
-    content,
-    handoffContext ? `\nContext: ${handoffContext}` : '',
-    threadId ? `\nDesign Space thread: ${threadId}` : '',
-    `\nCheck Design Space for full conversation history if needed.`,
-  ].filter(Boolean).join('\n');
+    `You were launched by The Conductor on ${MACHINE}.`,
+    `First: read your project files to understand who you are.`,
+    `Then: register with Design Space and check your messages.`,
+    `You have a ${messageType || 'message'} from ${fromAgent} waiting for you.`,
+  ].join(' ');
 
   launchSession({
     agentName: toAgent || 'agent',

@@ -2,10 +2,10 @@
   "agents": {
     "claude": {
       "command": "claude",
-      "args": ["--dangerously-skip-permissions"],
+      "args": [],
       "prompt_flag": null,
       "interactive": true,
-      "note": "Claude Code: interactive, skip permissions for autonomous Conductor sessions"
+      "note": "Claude Code: interactive mode, prompt is positional. Trust folders manually first."
     },
     "claude-headless": {
       "command": "claude",
@@ -15,11 +15,11 @@
       "note": "Claude Code non-interactive: -p prints output and exits"
     },
     "codex-cli": {
-      "command": "codex",
-      "args": [],
-      "prompt_flag": "--prompt",
+      "command": "npx",
+      "args": ["@openai/codex"],
+      "prompt_flag": null,
       "interactive": true,
-      "note": "OpenAI Codex CLI — verify install with 'codex --version'"
+      "note": "OpenAI Codex CLI — prompt is positional argument"
     },
     "aider": {
       "command": "aider",
