@@ -312,18 +312,19 @@ function launchSession({ agentName, agentCli, prompt, workDir, project, threadId
   });
 
   // --- Inject the initial prompt after the agent UI is ready ---
-  // Wait for the agent to render its UI, then type the prompt as if the user typed it.
+  // Wait for the agent to render its UI, then type the activation command.
+  // The prompt is the persona activation (e.g. /saga). The actual task is in
+  // Design Space — the persona activation will check for it.
   if (prompt) {
     let injected = false;
     const promptDisposable = pty.onData((data) => {
       // Wait for the input prompt indicator (❯ for Claude, $ for others)
       if (!injected && (data.includes('❯') || data.includes('$') || data.includes('>'))) {
         injected = true;
-        // Small delay to let the UI settle
         setTimeout(() => {
-          pty.write(content || prompt);
+          pty.write(prompt);
           pty.write('\r');
-          log(`Injected task prompt into ${agentName} session`);
+          log(`Activated ${agentName} with: ${prompt}`);
         }, 500);
         promptDisposable.dispose();
       }
@@ -333,9 +334,9 @@ function launchSession({ agentName, agentCli, prompt, workDir, project, threadId
     setTimeout(() => {
       if (!injected) {
         injected = true;
-        pty.write(content || prompt);
+        pty.write(prompt);
         pty.write('\r');
-        log(`Injected task prompt into ${agentName} session (fallback)`);
+        log(`Activated ${agentName} (fallback): ${prompt}`);
       }
     }, 30000);
   }
@@ -492,14 +493,13 @@ function handleRealtimeMessage(payload) {
   const workDir = meta.working_directory || null;
   const project = msg.project || meta.project || null;
 
-  // Keep the prompt minimal. The agent's identity comes from the repo
-  // (CLAUDE.md, .codex/, activation files). The Conductor is just the alarm clock.
-  const prompt = [
-    `You were launched by The Conductor on ${MACHINE}.`,
-    `First: read your project files to understand who you are.`,
-    `Then: register with Design Space and check your messages.`,
-    `You have a ${messageType || 'message'} from ${fromAgent} waiting for you.`,
-  ].join(' ');
+  // The initial prompt activates the agent persona and tells it to register.
+  // The persona activation command (e.g. /saga, /freya) loads the full identity.
+  // Then /u checks Design Space for the actual task.
+  const agentSlash = toAgent ? `/${toAgent}` : '';
+  const prompt = agentSlash
+    ? `${agentSlash}`
+    : `You were launched by The Conductor on ${MACHINE}. Register with Design Space and run /u to check your messages.`;
 
   launchSession({
     agentName: toAgent || 'agent',
