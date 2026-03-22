@@ -254,8 +254,9 @@ async function checkUnread() {
 // Session launcher
 // ---------------------------------------------------------------------------
 
-function launchSession({ agentName, agentCli, prompt, workDir, project, threadId, fromAgent, content }) {
+function launchSession({ agentName, agentCli, prompt, workDir, project, threadId, fromAgent, content, activation }) {
   const cli = agentsConfig.agents[agentCli] || agentsConfig.agents[agentsConfig.default_agent];
+  activation = activation || cli?.activation || 'prompt';
   if (!cli) {
     log(`Unknown agent CLI: ${agentCli}`);
     tg(`Unknown agent CLI: ${agentCli}`);
@@ -534,6 +535,7 @@ function handleRealtimeMessage(payload) {
     agentName: toAgent || 'agent',
     agentCli,
     prompt,
+    activation,
     workDir,
     project,
     threadId,
