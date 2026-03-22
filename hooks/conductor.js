@@ -18,6 +18,7 @@
  */
 
 import { createClient } from '@supabase/supabase-js';
+import { spawn as ptySpawn } from 'node-pty';
 import { spawn, execSync } from 'child_process';
 import { readFileSync, writeFileSync, unlinkSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
@@ -265,100 +266,105 @@ function launchSession({ agentName, agentCli, prompt, workDir, project, threadId
   log(`Launching ${agentName} via ${cli.command} in ${cwd}`);
   tg(`*${MACHINE}:* Starting ${agentName} session...\n_${(prompt || '').substring(0, 120)}_`);
 
-  // Write a per-session launcher script to avoid cmd.exe escaping issues.
-  // This is the cleanest way to pass complex prompts on Windows.
-  const sessionId = `conductor-${Date.now()}`;
-  const launcherPath = join(__dirname, `${sessionId}.bat`);
-
-  const cmdParts = [cli.command, ...cli.args];
+  // Build args
+  const args = [...cli.args];
   if (prompt) {
     if (cli.prompt_flag) {
-      cmdParts.push(cli.prompt_flag, `"${prompt}"`);
+      args.push(cli.prompt_flag, prompt);
     } else {
-      // Claude Code: prompt is positional, --append-system-prompt for context
-      cmdParts.push(`--append-system-prompt "${prompt}"`);
+      // Claude Code: prompt is positional
+      args.push(prompt);
     }
   }
 
-  const batContent = [
-    '@echo off',
-    'echo.',
-    `echo ============================================================`,
-    `echo   THE CONDUCTOR - New Session`,
-    `echo ============================================================`,
-    `echo   Agent: ${agentName}`,
-    `echo   From: ${fromAgent || 'unknown'}`,
-    `echo   Machine: ${MACHINE}`,
-    `echo   Working dir: ${cwd}`,
-    `echo   Thread: ${threadId}`,
-    'echo.',
-    `echo   Task: ${(content || '').substring(0, 200).replace(/"/g, '').replace(/\n/g, ' ')}`,
-    'echo.',
-    `echo ============================================================`,
-    'echo.',
-    `cd /d ${cwd}`,
-    cmdParts.join(' '),
-  ].join('\r\n');
-  writeFileSync(launcherPath, batContent);
+  // Strip CLAUDECODE env var so spawned sessions don't think they're nested
+  const cleanEnv = { ...process.env };
+  delete cleanEnv.CLAUDECODE;
 
-  // Clean up launcher after session starts
-  setTimeout(() => {
-    try { unlinkSync(launcherPath); } catch (_) {}
-  }, 60000);
-
-  // Open a visible Windows Terminal window with the agent session
-  const wtArgs = ['-d', cwd, '--title', `${agentName} [Conductor]`, '--', launcherPath];
-
-  const proc = spawn('wt.exe', wtArgs, {
-    stdio: 'ignore',
-    detached: true,
-    shell: false,
+  // Spawn via node-pty — gives us a real PTY (full interactive UI)
+  // AND stdin/stdout handles (so we can inject messages and observe output)
+  const pty = ptySpawn(cli.command, args, {
+    name: 'xterm-256color',
+    cols: 120,
+    rows: 40,
+    cwd,
+    env: cleanEnv,
   });
-  proc.unref();
 
   const session = {
-    process: proc,
+    pty,
     agentName,
     agentCli,
     project,
     threadId,
     startedAt: Date.now(),
     registered: false,
+    outputBuffer: '',
+    lineCount: 0,
+    lastOutputAt: Date.now(),
   };
 
   activeSessions.set(threadId, session);
 
-  // Ping Design Space to check if the agent registered.
-  // If it doesn't show up after a few attempts, something went wrong.
-  let attempts = 0;
-  const maxAttempts = 12; // 12 x 10s = 2 minutes
-  const pingInterval = setInterval(async () => {
-    attempts++;
-    try {
-      const result = await postToDesignSpace({
-        action: 'who-online',
-        agent_id: `conductor-${MACHINE}`,
-      });
-      const agents = result?.online || result?.agents || [];
-      const found = agents.find(a =>
-        a.agent_name === agentName || a.agent_id?.startsWith(agentName)
-      );
-      if (found) {
-        session.registered = true;
-        log(`${agentName} registered as ${found.agent_id} — session is alive`);
-        tg(`*${MACHINE}:* ${agentName} is online as ${found.agent_id}`);
-        clearInterval(pingInterval);
-      } else if (attempts >= maxAttempts) {
-        log(`${agentName} did not register after ${maxAttempts * 10}s — session may have failed`);
-        tg(`*${MACHINE}:* WARNING — ${agentName} launched but never registered with Design Space`);
-        clearInterval(pingInterval);
+  // --- PTY output → Conductor's terminal + observation ---
+  pty.onData((data) => {
+    // Relay to our own stdout so the user sees it
+    process.stdout.write(data);
+
+    session.outputBuffer += data;
+    session.lineCount += (data.match(/\n/g) || []).length;
+    session.lastOutputAt = Date.now();
+  });
+
+  // --- Keyboard input → PTY (user can type in Conductor's terminal) ---
+  if (process.stdin.isTTY) {
+    // Only attach stdin if we're the active session
+    // (for MVP: last launched session gets keyboard input)
+    process.stdin.setRawMode(true);
+    process.stdin.resume();
+    process.stdin.on('data', (data) => {
+      // Ctrl+C twice = kill session
+      if (data.toString() === '\x03') {
+        pty.write('\x03');
+      } else {
+        pty.write(data.toString());
       }
-    } catch (err) {
-      // Silent — keep trying
+    });
+  }
+
+  // --- Session end ---
+  pty.onExit(({ exitCode }) => {
+    const duration = Math.round((Date.now() - session.startedAt) / 60000);
+    log(`\n${agentName} session ended (exit ${exitCode}, ${duration}m, ${session.lineCount} lines)`);
+    tg(`*${MACHINE}:* ${agentName} session complete — ${duration}m, exit ${exitCode}`);
+
+    // Post summary to Design Space
+    const lastLines = session.outputBuffer.split('\n').slice(-20).join('\n');
+    if (threadId && !threadId.startsWith('telegram-')) {
+      postToDesignSpace({
+        action: 'respond',
+        message_id: threadId,
+        from_agent: `conductor-${MACHINE}`,
+        content: `Session ended (exit ${exitCode}, ${duration}m).\n\nLast output:\n${lastLines.substring(0, 1000)}`,
+      });
     }
-  }, 10000);
+
+    activeSessions.delete(threadId);
+
+    // Restore stdin
+    if (process.stdin.isTTY) {
+      process.stdin.setRawMode(false);
+      process.stdin.pause();
+    }
+  });
 
   return session;
+}
+
+// Inject a message into a running session's PTY
+function injectMessage(session, fromAgent, message) {
+  const banner = `\n\r\x1b[1;36m[Conductor] Message from ${fromAgent}:\x1b[0m\n\r${message}\n\r`;
+  session.pty.write(banner);
 }
 
 // ---------------------------------------------------------------------------
@@ -412,11 +418,11 @@ function handleRealtimeMessage(payload) {
   }
 
   // --- Check if we have an active session for this thread ---
-  // In terminal mode we don't have stdin access — the agent reads Design Space directly.
-  // Just log and notify, don't try to inject.
+  // Inject the message directly into the running PTY session
   const existingSession = activeSessions.get(threadId);
-  if (existingSession) {
-    log(`Message for active ${existingSession.agentName} session (agent will pick it up from Design Space)`);
+  if (existingSession && existingSession.pty) {
+    injectMessage(existingSession, fromAgent, content.substring(0, 500));
+    log(`Injected message into ${existingSession.agentName} session`);
     tg(`[DS → ${existingSession.agentName}@${MACHINE}] ${fromAgent}: ${content.substring(0, 100)}`);
     return;
   }
