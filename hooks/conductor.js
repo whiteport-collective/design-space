@@ -188,7 +188,7 @@ function handleTelegramInput(text) {
 }
 
 function launchFromTelegram(instruction) {
-  // Parse: "start saga for kalla" or "start claude for dogweek in C:\dev\..."
+  // Parse: "start saga for kalla" or "start codex for dogweek in C:\dev\..."
   const match = instruction.match(/^start\s+(\w+)(?:\s+for\s+(\w+))?(?:\s+in\s+(.+))?$/i);
   if (!match) {
     tg(`Couldn't parse: ${instruction}\nFormat: \`start <agent> for <project> [in <path>]\``);
@@ -270,13 +270,12 @@ function launchSession({ agentName, agentCli, prompt, workDir, project, threadId
 
   // Build the command. For "prompt" activation agents (Codex, aider),
   // the task is passed via a launcher script to avoid cmd.exe escaping issues.
-  // For "slash" activation agents (Claude Code), launch bare — prompt injected via PTY.
+  // For "slash" activation agents, launch bare — prompt injected via PTY.
   const args = [...cli.args];
 
-  // Strip CLAUDECODE env var so spawned sessions don't think they're nested
-  // Set AGENT_ID so the agent posts to Design Space with the right identity
+  // Clean env: remove nesting detection vars, set agent identity
   const cleanEnv = { ...process.env };
-  delete cleanEnv.CLAUDECODE;
+  delete cleanEnv.CLAUDECODE; // Prevents nested-session detection in some CLIs
   cleanEnv.AGENT_ID = agentName;
   cleanEnv.AGENT_PROJECT = project || '';
 
@@ -335,12 +334,12 @@ function launchSession({ agentName, agentCli, prompt, workDir, project, threadId
   });
 
   // --- Inject the persona activation for slash-mode agents ---
-  // For "slash" activation (Claude Code): wait for UI, then type /saga etc.
-  // For "prompt" activation (Codex, aider): task was already passed as CLI arg.
+  // For "slash" activation: wait for UI, then type /saga etc.
+  // For "prompt" activation: task was already passed as CLI arg.
   if (activation === 'slash' && prompt) {
     let injected = false;
     const promptDisposable = pty.onData((data) => {
-      // Wait for the input prompt indicator (❯ for Claude, $ for others)
+      // Wait for the input prompt indicator (❯, $, > etc.)
       if (!injected && (data.includes('❯') || data.includes('$') || data.includes('>'))) {
         injected = true;
         setTimeout(() => {
@@ -414,7 +413,7 @@ function launchSession({ agentName, agentCli, prompt, workDir, project, threadId
 }
 
 // Nudge a running session about a new Design Space message.
-// Uses /btw (Claude Code's side-channel) so the agent sees the notification
+// Uses /btw (side-channel command) so the agent sees the notification
 // without interrupting its current work. It can run /u when ready.
 function nudgeSession(session, fromAgent) {
   setTimeout(() => {
@@ -466,19 +465,19 @@ function handleRealtimeMessage(payload) {
   }
 
   // If from an agent we launched (active session), skip — don't react to our own children.
-  // Match by persona name (saga, saga-4894) AND by CLI name (claude, claude-4894)
+  // Match by persona name (e.g. saga, saga-4894) AND by CLI name
   // because agents may post as their CLI identity instead of their persona.
   for (const [, session] of activeSessions) {
-    const names = [session.agentName, session.agentCli, 'claude', 'claude-code'];
-    if (names.some(n => fromAgent === n || fromAgent.startsWith(n + '-'))) {
+    const names = [session.agentName, session.agentCli];
+    if (names.some(n => n && (fromAgent === n || fromAgent.startsWith(n + '-')))) {
       log(`Ignoring message from own child session: ${fromAgent}`);
       return;
     }
   }
 
   // --- Check if we have an active session for this agent ---
-  // Match by agent name (not just thread) — if a claude session is running,
-  // any message to "claude" gets injected into it.
+  // Match by agent name (not just thread) — if a session for this agent is
+  // already running, nudge it instead of launching a new one.
   let existingSession = activeSessions.get(threadId);
   if (!existingSession) {
     for (const [, session] of activeSessions) {
@@ -517,14 +516,14 @@ function handleRealtimeMessage(payload) {
   const project = msg.project || meta.project || null;
 
   // Determine activation mode from agent config:
-  // - "slash": Claude Code — type /saga, /freya etc. to load persona, task is in Design Space
+  // - "slash": type /saga, /freya etc. to load persona, task is in Design Space
   // - "prompt": Codex, aider, etc. — pass the task content directly as the prompt
   const cli2 = agentsConfig.agents[agentCli] || agentsConfig.agents[agentsConfig.default_agent];
   const activation = cli2?.activation || 'prompt';
 
   let prompt;
   if (activation === 'slash' && toAgent) {
-    // Claude Code: activate persona, agent finds its own task in Design Space
+    // Slash activation: activate persona, agent finds its own task in Design Space
     prompt = `/${toAgent}`;
   } else {
     // Other CLIs: pass the task directly
