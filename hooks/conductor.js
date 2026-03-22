@@ -262,7 +262,8 @@ function launchSession({ agentName, agentCli, prompt, workDir, project, threadId
     return;
   }
 
-  const cwd = workDir || process.cwd();
+  // Default to repo root (one level up from hooks/), not hooks/ itself
+  const cwd = workDir || join(__dirname, '..');
   log(`Launching ${agentName} via ${cli.command} in ${cwd}`);
   tg(`*${MACHINE}:* Starting ${agentName} session...\n_${(prompt || '').substring(0, 120)}_`);
 
@@ -271,8 +272,11 @@ function launchSession({ agentName, agentCli, prompt, workDir, project, threadId
   const args = [...cli.args];
 
   // Strip CLAUDECODE env var so spawned sessions don't think they're nested
+  // Set AGENT_ID so the agent posts to Design Space with the right identity
   const cleanEnv = { ...process.env };
   delete cleanEnv.CLAUDECODE;
+  cleanEnv.AGENT_ID = agentName;
+  cleanEnv.AGENT_PROJECT = project || '';
 
   // Spawn via node-pty — gives us a real PTY (full interactive UI)
   // AND stdin/stdout handles (so we can inject messages and observe output)
@@ -443,9 +447,12 @@ function handleRealtimeMessage(payload) {
     return;
   }
 
-  // If from an agent we launched (active session), skip — don't react to our own children
+  // If from an agent we launched (active session), skip — don't react to our own children.
+  // Match by persona name (saga, saga-4894) AND by CLI name (claude, claude-4894)
+  // because agents may post as their CLI identity instead of their persona.
   for (const [, session] of activeSessions) {
-    if (fromAgent === session.agentName || fromAgent.startsWith(session.agentName + '-')) {
+    const names = [session.agentName, session.agentCli, 'claude', 'claude-code'];
+    if (names.some(n => fromAgent === n || fromAgent.startsWith(n + '-'))) {
       log(`Ignoring message from own child session: ${fromAgent}`);
       return;
     }
