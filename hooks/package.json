@@ -1,13 +1,13 @@
 {
   "name": "design-space-hooks",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "type": "module",
-  "description": "Design Space hooks and The Conductor — agent session manager",
+  "description": "Design Space — agent session runner and lifecycle hooks",
   "scripts": {
-    "conductor": "node conductor.js",
-    "conductor:auto": "node conductor.js --auto-launch",
-    "conductor:stockholm": "node conductor.js --auto-launch --machine stockholm",
-    "conductor:laptop": "node conductor.js --auto-launch --machine laptop",
+    "ds": "node ds.js",
+    "ds:auto": "node ds.js --auto-launch",
+    "ds:stockholm": "node ds.js --auto-launch --machine stockholm",
+    "ds:laptop": "node ds.js --auto-launch --machine laptop",
     "listen": "node orchestrator.js",
     "listen:auto": "node orchestrator.js --auto-launch"
   },
