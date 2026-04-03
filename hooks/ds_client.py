@@ -1,5 +1,6 @@
 """
-Design Space HTTP Client — zero-dependency Python module.
+Agent Space HTTP Client — zero-dependency Python module.
+(Formerly Design Space — renamed 2026-04-03)
 
 Drop this file into any project. No pip install, no MCP server, no config.
 Just import and use.
@@ -25,6 +26,9 @@ if sys.platform == "win32":
 
 _DEFAULT_URL = None
 _DEFAULT_KEY = None
+
+
+AgentSpace = None  # assigned after class definition — forward ref for new name
 
 
 class DesignSpace:
@@ -56,7 +60,7 @@ class DesignSpace:
     # --- Knowledge ---
 
     def capture(self, content, category="general", topics=None, designer=None, source=None):
-        """Store knowledge in Design Space."""
+        """Store knowledge in Agent Space."""
         return self._post("capture-design-space", {
             "content": content,
             "category": category,
@@ -66,7 +70,7 @@ class DesignSpace:
         })
 
     def search(self, query, category=None, limit=10, threshold=0.3):
-        """Semantic search across Design Space."""
+        """Semantic search across Agent Space."""
         payload = {"query": query, "limit": limit, "threshold": threshold}
         if category:
             payload["category"] = category
@@ -126,3 +130,64 @@ class DesignSpace:
         if image_base64:
             payload["image"] = image_base64
         return self._post("search-visual-similarity", payload)
+
+    # --- Repo Files ---
+
+    def put_file(self, project, path, content, org_id="whiteport", repo=None, content_type="text/markdown"):
+        """Store a project file in Agent Space."""
+        return self._post("repo-files", {
+            "action": "put",
+            "org_id": org_id,
+            "project": project,
+            "repo": repo,
+            "path": path,
+            "content": content,
+            "content_type": content_type,
+        })
+
+    def put_files(self, project, files, org_id="whiteport", repo=None):
+        """Batch upsert project files. files = list of {path, content}."""
+        return self._post("repo-files", {
+            "action": "put-batch",
+            "org_id": org_id,
+            "project": project,
+            "repo": repo,
+            "files": files,
+        })
+
+    def get_file(self, project, path, org_id="whiteport"):
+        """Retrieve a project file from Agent Space."""
+        return self._post("repo-files", {
+            "action": "get",
+            "org_id": org_id,
+            "project": project,
+            "path": path,
+        })
+
+    def list_files(self, project, path_prefix=None, org_id="whiteport", repo=None):
+        """List project files, optionally filtered by path prefix."""
+        return self._post("repo-files", {
+            "action": "list",
+            "org_id": org_id,
+            "project": project,
+            "repo": repo,
+            "path_prefix": path_prefix,
+        })
+
+    # --- Session Start ---
+
+    def session_start(self, agent_id=None, project=None, model_target="claude",
+                      org_id="whiteport", client_id=None, repo=None):
+        """Single boot call — returns instructions, files, messages, presence."""
+        return self._post("session-start", {
+            "agent_id": agent_id or self.agent_id,
+            "project": project,
+            "model_target": model_target,
+            "org_id": org_id,
+            "client_id": client_id,
+            "repo": repo,
+        }, timeout=10)
+
+
+# AgentSpace is the new official name — DesignSpace kept for backward compat
+AgentSpace = DesignSpace
