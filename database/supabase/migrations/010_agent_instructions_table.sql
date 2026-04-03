@@ -10,7 +10,7 @@ create table if not exists public.agent_instructions (
   id uuid primary key default gen_random_uuid(),
 
   -- Which agent and model this instruction targets
-  agent_id     text not null,   -- e.g. saga, freya, mimir, idunn
+  agent_id     text not null,   -- e.g. saga, freya, mimir, idun
   model_target text not null default 'claude',  -- claude, codex, gemini, generic
 
   -- Skill hierarchy level
