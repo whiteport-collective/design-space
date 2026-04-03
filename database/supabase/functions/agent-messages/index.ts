@@ -1,6 +1,7 @@
-// agent-messages v21: Fix check — direct messages never missed + own messages filtered
+// agent-messages v22: Add wrap + get-presence for session state persistence
 // POST { action: "send" | "check" | "respond" | "register" | "who-online" | "mark-read" | "thread"
-//                | "update-status" | "get-protocol" | "update-protocol" | "ack-protocol" }
+//                | "update-status" | "get-protocol" | "update-protocol" | "ack-protocol"
+//                | "wrap" | "get-presence" }
 // All entries stored in design_space table (category = "agent_message") — every message is searchable knowledge
 // Work orders are messages with message_type = "work-order" and status in metadata
 // Signal strength HIGHLIGHTS relevance but NEVER hides messages
@@ -663,7 +664,44 @@ serve(async (req) => {
       return jsonResponse({ message, task: message });
     }
 
-    return jsonResponse({ error: `Invalid action. Use: send, check, respond, update-status, mark-read, thread, register, who-online, get-protocol, update-protocol, ack-protocol` }, 400);
+    // ==================== WRAP ====================
+    if (action === "wrap") {
+      const { agent_id, repo, last_status_report, working_on } = body;
+      if (!agent_id) return jsonResponse({ error: "agent_id is required" }, 400);
+
+      const { error } = await supabase
+        .from("agent_presence")
+        .update({
+          last_status_report,
+          working_on: working_on || null,
+          status: "offline",
+          last_heartbeat: new Date().toISOString(),
+        })
+        .eq("agent_id", agent_id);
+
+      if (error) throw error;
+      return jsonResponse({ ok: true });
+    }
+
+    // ==================== GET-PRESENCE ====================
+    if (action === "get-presence") {
+      const { agent_name, repo } = body;
+      if (!agent_name || !repo) return jsonResponse({ error: "agent_name and repo are required" }, 400);
+
+      const { data, error } = await supabase
+        .from("agent_presence")
+        .select("agent_id, agent_name, repo, status, working_on, last_status_report, last_heartbeat")
+        .eq("agent_name", agent_name)
+        .eq("repo", repo)
+        .order("last_heartbeat", { ascending: false })
+        .limit(1)
+        .single();
+
+      if (error && error.code !== "PGRST116") throw error;
+      return jsonResponse({ presence: data || null });
+    }
+
+    return jsonResponse({ error: `Invalid action. Use: send, check, respond, update-status, mark-read, thread, register, who-online, get-protocol, update-protocol, ack-protocol, wrap, get-presence` }, 400);
   } catch (err) {
     return jsonResponse({ error: err.message }, 500);
   }
