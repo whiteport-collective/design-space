@@ -1,4 +1,4 @@
-// agent-messages v24: check filters by user_id (own messages only by default), urgent signal for handoffs
+// agent-messages v25: mark-read requires disposition (handled | snoozed | read); snoozed re-surfaces next check
 // POST { action: "send" | "check" | "respond" | "register" | "who-online" | "mark-read" | "thread"
 //                | "update-status" | "get-protocol" | "update-protocol" | "ack-protocol"
 //                | "wrap" | "get-presence" }
@@ -469,14 +469,21 @@ serve(async (req) => {
     }
 
     // ==================== MARK-READ ====================
+    // disposition is required — agents must actively decide the fate of every message:
+    //   "handled"  — done, no follow-up needed
+    //   "snoozed"  — keep visible next session (re-surfaces on next check)
+    //   "read"     — acknowledged, not actionable
     if (action === "mark-read") {
-      const { message_ids, agent_id } = body;
+      const { message_ids, agent_id, disposition } = body;
 
       if (!agent_id) {
         return jsonResponse({ error: "agent_id is required" }, 400);
       }
       if (!message_ids || !Array.isArray(message_ids)) {
         return jsonResponse({ error: "message_ids array is required" }, 400);
+      }
+      if (!disposition || !["handled", "snoozed", "read"].includes(disposition)) {
+        return jsonResponse({ error: "disposition is required: handled | snoozed | read" }, 400);
       }
 
       for (const id of message_ids) {
@@ -488,19 +495,24 @@ serve(async (req) => {
 
         if (existing) {
           const readBy = existing.metadata?.read_by || [];
-          if (!readBy.includes(agent_id)) {
+          // Snoozed messages are NOT added to read_by — they re-surface on next check
+          if (disposition !== "snoozed" && !readBy.includes(agent_id)) {
             readBy.push(agent_id);
           }
+          // Record disposition per agent: { "freya-2567": "handled", "saga": "read" }
+          const dispositions = existing.metadata?.dispositions || {};
+          dispositions[agent_id] = disposition;
+
           await supabase
             .from("agent_space")
             .update({
-              metadata: { ...existing.metadata, read_by: readBy },
+              metadata: { ...existing.metadata, read_by: readBy, dispositions },
             })
             .eq("id", id);
         }
       }
 
-      return jsonResponse({ marked: message_ids.length, agent_id });
+      return jsonResponse({ marked: message_ids.length, agent_id, disposition });
     }
 
     // ==================== THREAD ====================
