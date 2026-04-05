@@ -1,7 +1,9 @@
-// agent-messages v23: wrap now posts handoff message (agent+repo+user_id tagged) so check can find it
+// agent-messages v24: check filters by user_id (own messages only by default), urgent signal for handoffs
 // POST { action: "send" | "check" | "respond" | "register" | "who-online" | "mark-read" | "thread"
 //                | "update-status" | "get-protocol" | "update-protocol" | "ack-protocol"
 //                | "wrap" | "get-presence" }
+// Signal tiers: urgent (handoff, all 3 nodes: user+repo+agent) > strong > medium > weak > available
+// User scoping: messages with a different user_id are hidden by default (include_others: true to override)
 // All entries stored in agent_space (category = "agent_message") — every message is searchable knowledge
 // Work orders are messages with message_type = "work-order" and status in metadata
 // Signal strength HIGHLIGHTS relevance but NEVER hides messages
@@ -111,10 +113,15 @@ serve(async (req) => {
     }
 
     // ==================== CHECK ====================
-    // Returns ALL unread messages — nothing hidden based on agent identity
-    // Signal strength HIGHLIGHTS relevance but every message is visible
+    // Signal tiers: urgent > strong > medium > weak > available
+    // urgent   = handoff matching all 3 nodes: user_id + repo + agent
+    // strong   = direct to agent + project match
+    // medium   = direct to agent
+    // weak     = project match
+    // available = broadcast, no specific match
+    // User scoping: messages with a different user_id are hidden by default
     if (action === "check") {
-      const { agent_id, project, limit = 50 } = body;
+      const { agent_id, project, repo, user_id, include_others = false, limit = 50 } = body;
 
       if (!agent_id) {
         return jsonResponse({ error: "agent_id is required" }, 400);
@@ -154,30 +161,48 @@ serve(async (req) => {
         return true;
       });
 
-      // Filter: remove already-read and own messages (both broadcasts and directed)
+      // Filter: already-read, own messages, and other users' messages
       const filtered = allMessages.filter((m: any) => {
         const readBy = m.metadata?.read_by || [];
         if (readBy.includes(agent_id)) return false;
         if (baseAgentId && readBy.includes(baseAgentId)) return false;
-        // Filter own messages — except handoffs (a wrap is a message from yourself to your next session)
+
+        // Filter own messages — except handoffs (from yourself to your next session)
         const fromAgent = m.metadata?.from_agent;
         const msgType = m.metadata?.message_type;
         if (msgType !== "handoff") {
           if (fromAgent === agent_id) return false;
           if (baseAgentId && fromAgent === baseAgentId) return false;
         }
+
+        // User scoping: hide messages that belong to a different user
+        // Handoffs are always user-scoped. Other messages only if they carry a user_id.
+        if (!include_others && user_id) {
+          const msgUserId = m.metadata?.user_id;
+          if (msgUserId && msgUserId !== user_id) return false;
+        }
+
         return true;
       });
 
-      // Compute signal strength — for HIGHLIGHTING, not filtering
+      // Compute signal strength
+      const effectiveRepo = repo || project; // repo is canonical, project is fallback
       const scored = filtered.map((m: any) => {
         const toAgent = m.metadata?.to_agent;
         const msgProject = m.project;
+        const msgRepo = m.metadata?.repo;
+        const msgUserId = m.metadata?.user_id;
+        const msgType = m.metadata?.message_type;
+
         const agentMatch = toAgent && directIds.includes(toAgent);
-        const projectMatch = project && msgProject === project;
+        const projectMatch = effectiveRepo && (msgProject === effectiveRepo || msgRepo === effectiveRepo);
+        const userMatch = user_id && msgUserId === user_id;
 
         let signal: string;
-        if (agentMatch && projectMatch) {
+        // urgent: handoff matching all 3 nodes — this is "your session is waiting"
+        if (msgType === "handoff" && agentMatch && projectMatch && userMatch) {
+          signal = "urgent";
+        } else if (agentMatch && projectMatch) {
           signal = "strong";
         } else if (agentMatch) {
           signal = "medium";
@@ -191,7 +216,7 @@ serve(async (req) => {
       });
 
       // Sort by signal strength, then recency
-      const signalOrder: Record<string, number> = { strong: 0, medium: 1, weak: 2, available: 3 };
+      const signalOrder: Record<string, number> = { urgent: 0, strong: 1, medium: 2, weak: 3, available: 4 };
       scored.sort((a: any, b: any) => {
         const diff = signalOrder[a.signal] - signalOrder[b.signal];
         if (diff !== 0) return diff;
