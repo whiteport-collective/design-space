@@ -1,8 +1,8 @@
-// agent-messages v22: Add wrap + get-presence for session state persistence
+// agent-messages v23: wrap now posts handoff message (agent+repo+user_id tagged) so check can find it
 // POST { action: "send" | "check" | "respond" | "register" | "who-online" | "mark-read" | "thread"
 //                | "update-status" | "get-protocol" | "update-protocol" | "ack-protocol"
 //                | "wrap" | "get-presence" }
-// All entries stored in design_space table (category = "agent_message") — every message is searchable knowledge
+// All entries stored in agent_space (category = "agent_message") — every message is searchable knowledge
 // Work orders are messages with message_type = "work-order" and status in metadata
 // Signal strength HIGHLIGHTS relevance but NEVER hides messages
 
@@ -91,7 +91,7 @@ serve(async (req) => {
       }
 
       const { data: message, error } = await supabase
-        .from("design_space")
+        .from("agent_space")
         .insert({
           content,
           category: "agent_message",
@@ -127,7 +127,7 @@ serve(async (req) => {
 
       // Phase 1: Direct messages to this agent (no limit — never miss a direct message)
       const { data: directMessages, error: directError } = await supabase
-        .from("design_space")
+        .from("agent_space")
         .select("*")
         .eq("category", "agent_message")
         .in("metadata->>to_agent", directIds)
@@ -137,7 +137,7 @@ serve(async (req) => {
 
       // Phase 2: All other recent messages (broadcasts + messages to others)
       const { data: otherMessages, error: otherError } = await supabase
-        .from("design_space")
+        .from("agent_space")
         .select("*")
         .eq("category", "agent_message")
         .not("metadata->>to_agent", "in", `(${directIds.map(id => `"${id}"`).join(",")})`)
@@ -159,10 +159,13 @@ serve(async (req) => {
         const readBy = m.metadata?.read_by || [];
         if (readBy.includes(agent_id)) return false;
         if (baseAgentId && readBy.includes(baseAgentId)) return false;
-        // Filter ALL own messages — broadcasts AND directed
+        // Filter own messages — except handoffs (a wrap is a message from yourself to your next session)
         const fromAgent = m.metadata?.from_agent;
-        if (fromAgent === agent_id) return false;
-        if (baseAgentId && fromAgent === baseAgentId) return false;
+        const msgType = m.metadata?.message_type;
+        if (msgType !== "handoff") {
+          if (fromAgent === agent_id) return false;
+          if (baseAgentId && fromAgent === baseAgentId) return false;
+        }
         return true;
       });
 
@@ -218,7 +221,7 @@ serve(async (req) => {
 
       if (message_id && !thread_id) {
         const { data: original } = await supabase
-          .from("design_space")
+          .from("agent_space")
           .select("thread_id, metadata")
           .eq("id", message_id)
           .single();
@@ -238,7 +241,7 @@ serve(async (req) => {
       let resolvedProject = project;
       if (!resolvedProject && message_id) {
         const { data: orig } = await supabase
-          .from("design_space")
+          .from("agent_space")
           .select("project")
           .eq("id", message_id)
           .single();
@@ -246,7 +249,7 @@ serve(async (req) => {
       }
 
       const { data: message, error } = await supabase
-        .from("design_space")
+        .from("agent_space")
         .insert({
           content,
           category: "agent_message",
@@ -281,7 +284,7 @@ serve(async (req) => {
       }
 
       const { data: existing } = await supabase
-        .from("design_space")
+        .from("agent_space")
         .select("metadata")
         .eq("id", message_id)
         .single();
@@ -304,7 +307,7 @@ serve(async (req) => {
       if (result) updates.result = result;
 
       const { data: message, error } = await supabase
-        .from("design_space")
+        .from("agent_space")
         .update({ metadata: updates })
         .eq("id", message_id)
         .select()
@@ -319,7 +322,7 @@ serve(async (req) => {
     if (action === "register") {
       const {
         agent_id, agent_name, model, platform = "claude-code",
-        framework, repo, working_on, workspace,
+        framework, project, repo, working_on, workspace,
         capabilities = [], tools_available = [],
         context_window, status = "online", pronouns,
       } = body;
@@ -342,6 +345,7 @@ serve(async (req) => {
           model,
           platform,
           framework,
+          project,
           repo,
           working_on,
           workspace,
@@ -371,7 +375,7 @@ serve(async (req) => {
       // Auto-include protocol if agent hasn't read the current version
       let instructions = null;
       const { data: protocol } = await supabase
-        .from("design_space")
+        .from("agent_space")
         .select("*")
         .eq("category", "protocol")
         .order("created_at", { ascending: false })
@@ -391,7 +395,7 @@ serve(async (req) => {
           if (!readBy.includes(effectiveAgentId)) {
             readBy.push(effectiveAgentId);
             await supabase
-              .from("design_space")
+              .from("agent_space")
               .update({ metadata: { ...protocol.metadata, read_by: readBy } })
               .eq("id", protocol.id);
           }
@@ -452,7 +456,7 @@ serve(async (req) => {
 
       for (const id of message_ids) {
         const { data: existing } = await supabase
-          .from("design_space")
+          .from("agent_space")
           .select("metadata")
           .eq("id", id)
           .single();
@@ -463,7 +467,7 @@ serve(async (req) => {
             readBy.push(agent_id);
           }
           await supabase
-            .from("design_space")
+            .from("agent_space")
             .update({
               metadata: { ...existing.metadata, read_by: readBy },
             })
@@ -483,7 +487,7 @@ serve(async (req) => {
       }
 
       const { data: messages, error } = await supabase
-        .from("design_space")
+        .from("agent_space")
         .select("*")
         .eq("thread_id", thread_id)
         .order("created_at", { ascending: true });
@@ -502,7 +506,7 @@ serve(async (req) => {
       const { agent_id } = body;
 
       const { data: protocol, error } = await supabase
-        .from("design_space")
+        .from("agent_space")
         .select("*")
         .eq("category", "protocol")
         .order("created_at", { ascending: false })
@@ -535,12 +539,12 @@ serve(async (req) => {
       }
 
       await supabase
-        .from("design_space")
+        .from("agent_space")
         .delete()
         .eq("category", "protocol");
 
       const { data: protocol, error } = await supabase
-        .from("design_space")
+        .from("agent_space")
         .insert({
           content,
           category: "protocol",
@@ -567,7 +571,7 @@ serve(async (req) => {
       }
 
       const { data: protocol } = await supabase
-        .from("design_space")
+        .from("agent_space")
         .select("id, metadata")
         .eq("category", "protocol")
         .order("created_at", { ascending: false })
@@ -580,7 +584,7 @@ serve(async (req) => {
           readBy.push(agent_id);
         }
         await supabase
-          .from("design_space")
+          .from("agent_space")
           .update({ metadata: { ...protocol.metadata, read_by: readBy } })
           .eq("id", protocol.id);
       }
@@ -597,7 +601,7 @@ serve(async (req) => {
       const embedding = await getEmbedding(`${title}\n${content}`);
 
       const { data: message, error } = await supabase
-        .from("design_space")
+        .from("agent_space")
         .insert({
           content,
           category: "agent_message",
@@ -631,10 +635,10 @@ serve(async (req) => {
     if (action === "claim-task") {
       // Redirect to update-status
       const { task_id, agent_id } = body;
-      const { data: existing } = await supabase.from("design_space").select("metadata").eq("id", task_id).single();
+      const { data: existing } = await supabase.from("agent_space").select("metadata").eq("id", task_id).single();
       if (!existing) return jsonResponse({ error: "Not found" }, 404);
       const updates = { ...existing.metadata, status: "in-progress", claimed_by: agent_id, claimed_at: new Date().toISOString() };
-      const { data: message, error } = await supabase.from("design_space").update({ metadata: updates }).eq("id", task_id).select().single();
+      const { data: message, error } = await supabase.from("agent_space").update({ metadata: updates }).eq("id", task_id).select().single();
       if (error) throw error;
       return jsonResponse({ message, task: message });
     }
@@ -642,7 +646,7 @@ serve(async (req) => {
     if (action === "list-tasks") {
       // Redirect to check filtered by message_type
       const { project, assignee, status, limit = 20 } = body;
-      let query = supabase.from("design_space").select("*").eq("category", "agent_message").eq("metadata->>message_type", "work-order").order("created_at", { ascending: false }).limit(limit);
+      let query = supabase.from("agent_space").select("*").eq("category", "agent_message").eq("metadata->>message_type", "work-order").order("created_at", { ascending: false }).limit(limit);
       if (project) query = query.eq("project", project);
       if (status) query = query.eq("metadata->>status", status);
       if (assignee) query = query.eq("metadata->>to_agent", assignee);
@@ -654,22 +658,30 @@ serve(async (req) => {
     if (action === "update-task") {
       // Redirect to update-status
       const { task_id, agent_id, status: newStatus, result } = body;
-      const { data: existing } = await supabase.from("design_space").select("metadata").eq("id", task_id).single();
+      const { data: existing } = await supabase.from("agent_space").select("metadata").eq("id", task_id).single();
       if (!existing) return jsonResponse({ error: "Not found" }, 404);
       const updates: any = { ...existing.metadata };
       if (newStatus) { updates.status = newStatus; if (newStatus === "done") updates.completed_at = new Date().toISOString(); }
       if (result) updates.result = result;
-      const { data: message, error } = await supabase.from("design_space").update({ metadata: updates }).eq("id", task_id).select().single();
+      const { data: message, error } = await supabase.from("agent_space").update({ metadata: updates }).eq("id", task_id).select().single();
       if (error) throw error;
       return jsonResponse({ message, task: message });
     }
 
     // ==================== WRAP ====================
+    // 1. Updates presence record (status → offline, last_status_report)
+    // 2. Posts a handoff message so the next session's check() can find it
+    //    Tagged with: agent, repo, user_id (optional) — supports many parallel sessions
     if (action === "wrap") {
-      const { agent_id, repo, last_status_report, working_on } = body;
+      const { agent_id, repo, last_status_report, working_on, user_id } = body;
       if (!agent_id) return jsonResponse({ error: "agent_id is required" }, 400);
 
-      const { error } = await supabase
+      // Derive base agent name (freya-2567 → freya)
+      const sessionMatch = agent_id.match(/^(.+)-(\d{4})$/);
+      const baseAgentId = sessionMatch ? sessionMatch[1] : agent_id;
+
+      // 1. Update presence
+      const { error: presenceError } = await supabase
         .from("agent_presence")
         .update({
           last_status_report,
@@ -679,23 +691,58 @@ serve(async (req) => {
         })
         .eq("agent_id", agent_id);
 
-      if (error) throw error;
-      return jsonResponse({ ok: true });
+      if (presenceError) throw presenceError;
+
+      // 2. Post handoff message — addressed to base agent so next session finds it via check()
+      const handoffContent = last_status_report || working_on || "Session wrapped.";
+      const embedding = await getEmbedding(handoffContent);
+      const thread_id = crypto.randomUUID();
+
+      const { data: handoffMessage, error: handoffError } = await supabase
+        .from("agent_space")
+        .insert({
+          content: handoffContent,
+          category: "agent_message",
+          project: repo || null,
+          embedding,
+          thread_id,
+          metadata: {
+            from_agent: agent_id,
+            from_platform: "claude-code",
+            to_agent: baseAgentId,
+            message_type: "handoff",
+            repo: repo || null,
+            user_id: user_id || null,
+            working_on: working_on || null,
+            read_by: [],
+          },
+        })
+        .select()
+        .single();
+
+      if (handoffError) throw handoffError;
+
+      return jsonResponse({ ok: true, handoff_id: handoffMessage.id });
     }
 
     // ==================== GET-PRESENCE ====================
     if (action === "get-presence") {
-      const { agent_name, repo } = body;
-      if (!agent_name || !repo) return jsonResponse({ error: "agent_name and repo are required" }, 400);
+      const { agent_name, repo, project } = body;
+      if (!agent_name || (!repo && !project)) {
+        return jsonResponse({ error: "agent_name and either repo or project are required" }, 400);
+      }
 
-      const { data, error } = await supabase
+      let query = supabase
         .from("agent_presence")
-        .select("agent_id, agent_name, repo, status, working_on, last_status_report, last_heartbeat")
+        .select("agent_id, agent_name, project, repo, status, working_on, last_status_report, last_heartbeat")
         .eq("agent_name", agent_name)
-        .eq("repo", repo)
         .order("last_heartbeat", { ascending: false })
-        .limit(1)
-        .single();
+        .limit(1);
+
+      if (repo) query = query.eq("repo", repo);
+      if (project) query = query.eq("project", project);
+
+      const { data, error } = await query.single();
 
       if (error && error.code !== "PGRST116") throw error;
       return jsonResponse({ presence: data || null });
@@ -713,3 +760,4 @@ function jsonResponse(data: any, status = 200) {
     headers: { ...corsHeaders, "Content-Type": "application/json" },
   });
 }
+
