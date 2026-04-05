@@ -1,6 +1,6 @@
 # Fireflies.ai Integration
 
-Captures meeting transcripts from Fireflies.ai into Design Space. Agents can then search meetings: *"what did the client say about pricing?"*
+Captures meeting transcripts from Fireflies.ai into Design Space. Agents can then search meetings: _"what did the client say about pricing?"_
 
 ## Setup
 
@@ -22,10 +22,11 @@ The webhook secret is a 16-32 character string you choose. You'll enter the same
 ### 3. Deploy the webhook
 
 ```bash
-supabase functions deploy webhook-fireflies --project-ref <your-ref>
+supabase functions deploy webhook-fireflies --project-ref <your-ref> --no-verify-jwt
 ```
 
 Your webhook URL will be:
+
 ```
 https://<your-ref>.supabase.co/functions/v1/webhook-fireflies
 ```
@@ -63,6 +64,7 @@ deno run --allow-net --allow-env sync.ts --id <transcript-id>
 ```
 
 Required env vars for sync:
+
 ```
 FIREFLIES_API_KEY=...
 DESIGN_SPACE_URL=https://<ref>.supabase.co/functions/v1
@@ -75,12 +77,13 @@ DESIGN_SPACE_KEY=<anon-key>
 2. The edge function fetches the full transcript via GraphQL
 3. Transcript is chunked by speaker blocks (~800 tokens each)
 4. Summary and action items become a separate high-priority chunk
-5. Each chunk is stored with embedding in `design_space` table
+5. Each chunk is stored with embedding in `agent_space` table
 6. A broadcast notification tells agents about the new meeting
 
 ## Data Model
 
 Each chunk is stored as:
+
 - **category:** `meeting_transcript`
 - **source:** `fireflies`
 - **source_file:** `fireflies:{transcriptId}` (used for deduplication)
