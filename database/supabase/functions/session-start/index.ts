@@ -43,11 +43,11 @@ function json(data: unknown, status = 200) {
 }
 
 function stripSuffix(agentId: string): string {
-  return agentId.replace(/-\d{4}$/, "");
+  return agentId.replace(/(-\d{4}|-[a-f0-9]{6})$/, "");
 }
 
 function hasSuffix(agentId: string): boolean {
-  return /^.+-\d{4}$/.test(agentId);
+  return /^.+(-\d{4}|-[a-f0-9]{6})$/.test(agentId);
 }
 
 function sessionCode(): string {
@@ -111,6 +111,7 @@ serve(async (req) => {
       pronouns = null,
       register = true,
       message_limit = 50,
+      resume_token = null,
     } = body;
 
     if (!agent_id) {
@@ -124,7 +125,9 @@ serve(async (req) => {
 
     // Compute effective IDs without a DB call
     const alreadySuffixed = hasSuffix(agent_id);
-    const code = alreadySuffixed ? agent_id.split("-").pop()! : sessionCode();
+    const code = alreadySuffixed
+      ? agent_id.split("-").pop()!
+      : (resume_token ?? sessionCode());
     const effectiveId = alreadySuffixed ? agent_id : `${agent_id}-${code}`;
     const baseId = stripSuffix(agent_id);
     const directIds = [effectiveId, baseId];
