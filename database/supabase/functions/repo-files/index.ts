@@ -1,13 +1,14 @@
 // repo-files: Virtual filesystem over Agent Space repo_files table
 // Enables agents and workers to navigate project files without text blobs in spawn payloads.
+// For multi-repo projects, include both project and repo in worker payloads and repo-files calls.
 //
 // Actions:
-//   put        - upsert one file
-//   put-batch  - upsert many files at once
-//   get        - retrieve one file by project + path (optional: section to extract a heading)
-//   list       - list files for a project (optional: path_prefix, paths_only)
-//   search     - text search across file contents (optional: path_prefix, limit)
-//   delete     - remove a file
+//   put        - upsert one file (project required, repo optional for repo-scoped files)
+//   put-batch  - upsert many files at once (project required, repo optional)
+//   get        - retrieve one file by project + path (repo optional, section optional)
+//   list       - list files for a project (repo optional, path_prefix + paths_only optional)
+//   search     - text search across file contents (repo optional, path_prefix + limit optional)
+//   delete     - remove a file (repo optional)
 //
 // Virtual filesystem semantics:
 //   list  → ls    (paths_only:true gives directory tree, default includes content)

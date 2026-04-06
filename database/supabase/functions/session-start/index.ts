@@ -1,4 +1,4 @@
-// session-start v2: Single boot call for Agent Space agents
+// session-start v3: Single boot call for Agent Space agents with active plugin awareness
 //
 // Collapses register + instructions + files + messages + state + skills into one call.
 // All DB queries run in parallel. No HTTP calls to other edge functions.
@@ -25,6 +25,7 @@
 //   online          — other agents currently online
 //   protocol        — current protocol content (if not yet acked), else null
 //   boot            — { summary, unread_count, next_task }
+//   active_plugins  — org-resolved plugin list (best-effort during enterprise rollout)
 
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -137,10 +138,13 @@ serve(async (req) => {
       skillsResult,
       filesResult,
       presenceResult,
+      priorStateResult,
       directMsgsResult,
       otherMsgsResult,
       protocolResult,
       onlineResult,
+      pluginCatalogResult,
+      installationsResult,
     ] = await Promise.all([
 
       // 1. Compiled instructions (hierarchical resolution)
@@ -182,6 +186,7 @@ serve(async (req) => {
             .from("agent_presence")
             .upsert(
               {
+                org_id,
                 agent_id: effectiveId,
                 agent_name: baseId,
                 model: model_target,
@@ -201,12 +206,23 @@ serve(async (req) => {
         : db
             .from("agent_presence")
             .select(
-              "agent_id, agent_name, repo, working_on, last_status_report, status, last_heartbeat, metadata",
+              "org_id, agent_id, agent_name, repo, working_on, last_status_report, status, last_heartbeat, metadata",
             )
             .in("agent_id", directIds)
             .order("last_heartbeat", { ascending: false })
             .limit(1)
             .maybeSingle(),
+
+      // 4b. Prior state — most recent presence row for this agent name (across all session IDs)
+      // Used for boot summary — the upsert above creates a fresh row, losing working_on/last_status_report
+      db
+        .from("agent_presence")
+        .select("working_on, last_status_report, status, last_heartbeat")
+        .eq("agent_name", baseId)
+        .not("agent_id", "eq", effectiveId)
+        .order("last_heartbeat", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
 
       // 5. Direct messages — no limit (never miss a direct)
       db
@@ -241,6 +257,18 @@ serve(async (req) => {
         .eq("status", "online")
         .gte("last_heartbeat", ONLINE_CUTOFF)
         .neq("agent_id", effectiveId),
+
+      // 9. Plugin catalog (best-effort; tables may not exist before enterprise migration)
+      db
+        .from("plugin_catalog")
+        .select("plugin_slug, display_name, version, category, dependencies, default_enabled")
+        .order("plugin_slug"),
+
+      // 10. Org plugin installations (best-effort; tables may not exist before enterprise migration)
+      db
+        .from("org_plugin_installations")
+        .select("plugin_slug, status, config, activated_at")
+        .eq("org_id", org_id),
     ]);
 
     // ── Process results ─────────────────────────────────────────────────────
@@ -259,6 +287,7 @@ serve(async (req) => {
     const state = presenceRow
       ? {
           agent_id: presenceRow.agent_id,
+          org_id: presenceRow.org_id,
           agent_name: presenceRow.agent_name,
           repo: presenceRow.repo,
           working_on: presenceRow.working_on,
@@ -335,8 +364,40 @@ serve(async (req) => {
       }
     }
 
+    const activePlugins = pluginCatalogResult.error || installationsResult.error
+      ? []
+      : (() => {
+          const installations = new Map(
+            ((installationsResult.data ?? []) as Array<Record<string, unknown>>)
+              .map((row) => [row.plugin_slug as string, row]),
+          );
+
+          return ((pluginCatalogResult.data ?? []) as Array<Record<string, unknown>>)
+            .filter((row) => {
+              const installation = installations.get(row.plugin_slug as string);
+              return row.default_enabled === true || installation?.status === "active";
+            })
+            .map((row) => {
+              const installation = installations.get(row.plugin_slug as string);
+              return {
+                plugin_slug: row.plugin_slug,
+                display_name: row.display_name,
+                version: row.version,
+                category: row.category,
+                dependencies: row.dependencies ?? [],
+                source: row.default_enabled === true ? "default" : "org_installation",
+                config: installation?.config ?? {},
+                activated_at: installation?.activated_at ?? null,
+              };
+            });
+        })();
+
     const online = (onlineResult.data ?? []) as Array<{ agent_id: string }>;
-    const boot = buildBootSummary(effectiveId, project, scored.length, state, online);
+    // Use prior state (from previous session) for boot summary — fresh upsert row has no working_on
+    const priorState = register
+      ? (priorStateResult.data as Record<string, unknown> | null)
+      : state;
+    const boot = buildBootSummary(effectiveId, project, scored.length, priorState, online);
 
     return json({
       agent_id: effectiveId,
@@ -348,6 +409,7 @@ serve(async (req) => {
       online,
       protocol: protocolPayload,
       boot,
+      active_plugins: activePlugins,
     });
   } catch (e) {
     console.error(e);

@@ -82,7 +82,7 @@ serve(async (req) => {
     const supabase = createClient(supabaseUrl, supabaseKey);
 
     const { data: entry, error } = await supabase
-      .from("design_space")
+      .from("agent_space")
       .insert({
         content,
         category,
@@ -119,3 +119,4 @@ serve(async (req) => {
     });
   }
 });
+

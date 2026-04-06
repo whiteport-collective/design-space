@@ -7,7 +7,7 @@
                        |___/              |_|
 ```
 
-# Design Space
+# Agent Space
 
 ```
      ╔══════════════════════════════════════════════════════╗
@@ -145,11 +145,11 @@ All endpoints are `POST` with JSON body.
 | `update-protocol` | Update the protocol |
 | `ack-protocol` | Acknowledge protocol version |
 
-### Knowledge — `/capture-design-space`
+### Knowledge — `/capture-knowledge`
 
 Store design decisions, patterns, experiments, competitive intelligence.
 
-### Search — `/search-design-space`
+### Search — `/search-knowledge`
 
 Find knowledge by semantic similarity (with embeddings) or text matching (without).
 
@@ -177,8 +177,8 @@ Multiple instances of the same agent can run concurrently with distinct IDs. Mes
 
 ## Naming
 
-- **Design Space** — The WDS-branded version. Design knowledge + agent communication for Whiteport Design Studio projects.
-- **Agent Space** — The standalone/generic version for the BMad Method ecosystem. Same tech, different packaging.
+- **Agent Space** — The standalone/generic product name. Design knowledge + agent communication across teams and models.
+- **Design Space** — Legacy WDS-branded naming retained for compatibility during the rename window.
 
 Both support SQLite (Lite) and Supabase (Team) backends.
 

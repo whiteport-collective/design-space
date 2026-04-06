@@ -97,7 +97,7 @@ serve(async (req) => {
 
     // Insert both entries as a linked pair
     const { data, error } = await supabase
-      .from("design_space")
+      .from("agent_space")
       .insert([
         {
           content: before_description,
@@ -154,3 +154,4 @@ serve(async (req) => {
     });
   }
 });
+

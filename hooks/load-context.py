@@ -1,134 +1,130 @@
 #!/usr/bin/env python3
 """
-SessionStart hook — Load recent agent experiences from Design Space.
-Gives the agent instant context about what happened in previous sessions.
+SessionStart hook: load Agent Space boot data in one round-trip.
+Falls back gracefully if session-start is unavailable.
 """
 
-import json
-import sys
 import os
-import urllib.request
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from agent_state import read_state, state_path
+from ds_client import AgentSpace
 
 # Fix Windows console encoding
-sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-SUPABASE_URL = os.environ.get("DESIGN_SPACE_URL")
-SUPABASE_KEY = os.environ.get("DESIGN_SPACE_ANON_KEY")
+
+def print_saved_state(agent_id):
+    agent_state = read_state(agent_id)
+    if not agent_state:
+        return False
+
+    print("\n--- AGENT STATE (auto-loaded) ---")
+    print(f"Saved state: {state_path(agent_id)}")
+    print("Hej igen! Saved session state found:")
+    print(agent_state)
+    print("Ska vi fortsatta?")
+    print("---\n")
+    return True
+
+
+def load_dotenv():
+    env_path = Path(__file__).resolve().parents[1] / ".env"
+    if not env_path.exists():
+        return
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip())
+
+
+def fallback_context(agent_id, project):
+    client = AgentSpace(agent_id=agent_id)
+    results = client.search(
+        "recent agent session activity",
+        category="agent_experience",
+        limit=7,
+        threshold=0.3,
+        project=project or None,
+    ) or {}
+    messages = client.check_messages(limit=5, project=project or None) or {}
+
+    context_results = results.get("results", [])
+    unread_messages = messages.get("messages", [])
+    if not context_results and not unread_messages:
+        return
+
+    print("\n--- AGENT SPACE CONTEXT (fallback) ---")
+    if context_results:
+        print("\nRecent sessions:")
+        for item in context_results[:7]:
+            content = item.get("content", "")[:150]
+            print(f"  - {content}")
+
+    if unread_messages:
+        print(f"\nUnread messages ({len(unread_messages)}):")
+        for message in unread_messages:
+            meta = message.get("metadata", {})
+            from_agent = meta.get("from_agent", "unknown")
+            print(f"  [{from_agent}]: {message.get('content', '')[:120]}")
+    print("---\n")
 
 
 def load_context():
-    """Fetch recent experiences from Design Space to prime the agent."""
+    load_dotenv()
+    agent_id = os.environ.get("AGENT_ID", "claude-code")
+    project = os.environ.get("AGENT_PROJECT", "")
+    model_target = os.environ.get("AGENT_MODEL_TARGET") or os.environ.get("AGENT_MODEL") or "claude"
+    repo = os.environ.get("AGENT_REPO") or None
 
-    # Search for recent agent experiences
-    payload = json.dumps({
-        "query": "recent agent session activity",
-        "category": "agent_experience",
-        "limit": 10,
-        "threshold": 0.3
-    }).encode("utf-8")
-
-    req = urllib.request.Request(
-        f"{SUPABASE_URL}/functions/v1/search-design-space",
-        data=payload,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {SUPABASE_KEY}"
-        },
-        method="POST"
-    )
+    print_saved_state(agent_id)
 
     try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            data = json.loads(resp.read())
+        client = AgentSpace(agent_id=agent_id)
+        boot = client.session_start(
+            project=project or None,
+            model_target=model_target,
+            repo=repo,
+        )
     except Exception:
-        return  # Silent fail — agent works fine without context
+        boot = None
 
-    results = data.get("results", [])
-    if not results:
+    if not boot or boot.get("error"):
+        fallback_context(agent_id, project)
         return
 
-    # Load rejections / taste constraints
-    rej_payload = json.dumps({
-        "query": "REJECTION constraint taste preference",
-        "category": "client_feedback",
-        "limit": 50,
-        "threshold": 0.2
-    }).encode("utf-8")
+    instructions = boot.get("instructions", []) or []
+    files = boot.get("files", []) or []
+    messages = boot.get("messages", []) or []
+    state = boot.get("state") or {}
 
-    rej_req = urllib.request.Request(
-        f"{SUPABASE_URL}/functions/v1/search-design-space",
-        data=rej_payload,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {SUPABASE_KEY}"
-        },
-        method="POST"
-    )
+    print("\n--- AGENT SPACE BOOT (auto-loaded) ---")
+    print(f"Instruction layers: {len(instructions)}")
+    if instructions:
+        levels = [item.get("skill_level", "?") for item in instructions]
+        print(f"Instruction chain: {' -> '.join(levels)}")
+    print(f"Project files: {len(files)}")
+    print(f"Unread messages: {len(messages)}")
 
-    rejections = []
-    try:
-        with urllib.request.urlopen(rej_req, timeout=5) as resp:
-            rej_data = json.loads(resp.read())
-            rejections = [r for r in rej_data.get("results", [])
-                         if r.get("content", "").startswith("REJECTION:")]
-    except Exception:
-        pass
-
-    # Also check for unread messages
-    msg_payload = json.dumps({
-        "action": "check",
-        "agent_id": os.environ.get("AGENT_ID", "claude-code"),
-        "include_broadcast": True,
-        "limit": 5
-    }).encode("utf-8")
-
-    msg_req = urllib.request.Request(
-        f"{SUPABASE_URL}/functions/v1/agent-messages",
-        data=msg_payload,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {SUPABASE_KEY}"
-        },
-        method="POST"
-    )
-
-    messages = []
-    try:
-        with urllib.request.urlopen(msg_req, timeout=3) as resp:
-            msg_data = json.loads(resp.read())
-            messages = msg_data.get("messages", [])
-    except Exception:
-        pass
-
-    # Output context for the agent
-    has_content = results or rejections or messages
-    if not has_content:
-        return
-
-    print("\n--- DESIGN SPACE CONTEXT (auto-loaded) ---")
-
-    if rejections:
-        print(f"\nTaste constraints ({len(rejections)}) — ALWAYS respect these:")
-        for r in rejections:
-            # Strip "REJECTION: " prefix for cleaner output
-            content = r.get("content", "")[11:][:200]
-            print(f"  NO: {content}")
-
-    if results:
-        print("\nRecent sessions:")
-        for r in results[:7]:
-            content = r.get("content", "")[:150]
-            print(f"  - {content}")
+    if state.get("last_status_report"):
+        print("\nSaved remote state:")
+        print(f"  {state.get('last_status_report')[:300]}")
+    elif state.get("working_on"):
+        print("\nSaved remote state:")
+        print(f"  Working on: {state.get('working_on')}")
 
     if messages:
-        print(f"\nUnread messages ({len(messages)}):")
-        for msg in messages:
-            meta = msg.get("metadata", {})
+        print("\nUnread messages:")
+        for message in messages[:5]:
+            meta = message.get("metadata", {})
             from_agent = meta.get("from_agent", "unknown")
-            print(f"  [{from_agent}]: {msg.get('content', '')[:120]}")
+            print(f"  [{from_agent}]: {message.get('content', '')[:120]}")
 
-    print("\nIf a user request conflicts with a taste constraint, ask:")
-    print("  'Design Space says [constraint]. Is this an exception, or should I follow it?'")
     print("---\n")
 
 

@@ -65,10 +65,11 @@ Three roles:
 
 ### Design Principles
 
-- **Agent-agnostic at every layer** — works with any CLI agent that reads stdin and writes stdout. Claude Code, Codex CLI, aider, Gemini CLI, Open Interpreter, or anything that ships next month. No vendor assumptions in the plumbing.
-- **LLM-agnostic routing** — the optional smart routing layer (post-MVP) uses any model that returns structured JSON. The conductor never assumes which LLM is "best."
-- **Not a service (yet)** — it's a Node.js script started by Task Scheduler
-- **Not an agent itself** — it doesn't think, it dispatches (MVP). Intelligence is a future dial, not baked in.
+- **Agent-agnostic at every layer** — works with any CLI agent that has an interactive terminal mode. Claude Code, Codex CLI, aider, Gemini CLI, Open Interpreter, or anything that ships next month. No vendor assumptions in the plumbing.
+- **PTY-first** — uses `node-pty` to give agents a real pseudo-terminal. This means agents get their full interactive UI, not a degraded piped-stdio mode. The conductor observes output via the PTY data stream and injects input by typing into it.
+- **LLM-agnostic routing** — the optional smart routing layer uses any model that returns structured JSON. The conductor never assumes which LLM is "best."
+- **Not a service yet** — it's a Node.js ESM script started by Task Scheduler or manually
+- **Not an agent itself** — it doesn't think, it dispatches. Intelligence is a future dial, not baked in.
 
 ## Detailed Specification
 
@@ -106,32 +107,43 @@ Agents are configured in a JSON file (`agents.json`):
   "agents": {
     "claude": {
       "command": "claude",
-      "args": ["--print"],
-      "prompt_flag": "--prompt",
-      "stdin_capable": true
+      "args": [],
+      "prompt_flag": null,
+      "interactive": true,
+      "note": "Claude Code: interactive mode, prompt is positional. Trust folders manually first."
+    },
+    "claude-headless": {
+      "command": "claude",
+      "args": ["-p"],
+      "prompt_flag": null,
+      "interactive": false,
+      "note": "Claude Code non-interactive: -p prints output and exits"
     },
     "codex-cli": {
-      "command": "codex",
-      "args": [],
-      "prompt_flag": "--prompt",
-      "stdin_capable": true
+      "command": "npx",
+      "args": ["@openai/codex"],
+      "prompt_flag": null,
+      "interactive": true,
+      "note": "OpenAI Codex CLI — prompt is positional argument"
     },
     "aider": {
       "command": "aider",
       "args": [],
       "prompt_flag": "--message",
-      "stdin_capable": true
+      "interactive": true
     },
     "gemini": {
       "command": "gemini",
       "args": [],
       "prompt_flag": "--prompt",
-      "stdin_capable": true
+      "interactive": true
     }
   },
   "default_agent": "claude"
 }
 ```
+
+Key change from the original design: `prompt_flag` is null for most agents because prompts are injected via the PTY after the agent UI is ready, not passed as CLI arguments. This avoids Windows `cmd.exe` escaping issues with complex strings.
 
 The handoff message specifies which agent to use (defaults to `default_agent`):
 
@@ -147,73 +159,93 @@ The handoff message specifies which agent to use (defaults to `default_agent`):
 
 ### 4. Terminal Launcher
 
-When launching a session:
+Sessions are spawned via `node-pty`, which provides a real pseudo-terminal. This is critical — interactive CLI agents like Claude Code and Codex need a PTY to render their UI correctly. On Windows, `node-pty` spawns via `cmd.exe`:
 
 ```javascript
-const proc = spawn(agent.command, [...agent.args, agent.prompt_flag, prompt], {
-  cwd: message.metadata.working_directory || defaultWorkDir,
-  stdio: ['pipe', 'pipe', 'pipe'],
-  shell: true
+const fullCmd = [cli.command, ...cli.args].join(' ');
+const pty = ptySpawn('cmd.exe', ['/c', fullCmd], {
+  name: 'xterm-256color',
+  cols: 120,
+  rows: 40,
+  cwd,
+  env: cleanEnv,  // CLAUDECODE env var stripped to prevent nested-session detection
 });
 ```
 
-The conductor holds references to all active sessions:
+The initial prompt is **not** passed as a CLI argument. Instead, the conductor waits for the agent's input prompt to appear, then types the activation command via the PTY. For persona agents, this is a slash command like `/saga`. A 30-second fallback injects the prompt if no prompt indicator is detected.
+
+The conductor holds references to all active sessions, keyed by Design Space thread ID:
 
 ```javascript
-activeSessions = {
-  "session-uuid": {
-    process: proc,         // child process handle
-    stdin: proc.stdin,     // for injecting messages
-    agent: "claude",
-    machine: "stockholm",
+activeSessions = Map {
+  "thread-id": {
+    pty,               // node-pty handle
+    agentName: "saga",
+    agentCli: "claude",
+    project: "kalla",
+    threadId: "...",
     startedAt: Date.now(),
-    threadId: "design-space-thread-id",
-    telegramChatId: 12345
+    registered: false,
+    outputBuffer: '',  // full stdout capture
+    lineCount: 0,
+    lastOutputAt: Date.now(),
+    stdinHandler,      // keyboard input listener reference
   }
 }
 ```
 
-### 5. Mid-Session Injection
+### 5. Mid-Session Nudging
 
-When a Design Space message arrives for an agent that already has a running session (matched by `to_agent` + `thread_id`):
+When a Design Space message arrives for an agent that already has a running session, the conductor does **not** inject the raw message text. Instead, it types `/u` into the PTY — the agent's own Design Space check command. The agent then reads and handles the message in its own way, when it's ready.
 
 ```javascript
-session.stdin.write(`\n[Design Space] ${fromAgent}: ${content}\n`);
+function nudgeSession(session, fromAgent) {
+  setTimeout(() => {
+    session.pty.write('/u\r');
+  }, 1000);
+}
 ```
 
-This appears in the agent's input as if the user typed it. The agent reads it and responds naturally.
+Session matching: first by thread ID, then by agent name. If a `claude` session is running, any message `to_agent: "claude"` gets routed to it regardless of thread.
+
+This design avoids fighting with terminal rendering — raw text injection into interactive PTY sessions causes display corruption. The `/u` approach lets the agent read the message through its normal Design Space integration.
 
 ### 6. Telegram Bridge
 
-**Setup:** One Telegram bot (via BotFather), token in `.env`:
+**Implementation:** No `node-telegram-bot-api` dependency. The conductor uses raw `fetch()` against the Telegram Bot API with long-polling via `getUpdates`. This keeps the dependency footprint minimal.
+
+**Setup:** One Telegram bot via BotFather, token in `.env`:
 
 ```env
 TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
 TELEGRAM_CHAT_ID=your-personal-chat-id
 ```
 
-**Outbound (conductor → you):**
+**Outbound — conductor → you:**
 
 | Event | Telegram message |
 |---|---|
-| Conductor starts | `Stockholm online — listening` |
-| Conductor reconnects | `Stockholm reconnected (offline 3m)` |
-| Session launched | `Stockholm: Starting Saga session for Kalla...` |
-| Agent output (periodic) | `[Saga@stockholm] Finished trigger map draft. 3 files written.` |
-| Session ended | `Stockholm: Saga session complete (12 min)` |
-| Agent asks question | `[Saga@stockholm] Should I include competitor analysis? Reply here.` |
+| Conductor starts | `*stockholm online* — The Conductor is listening.` |
+| Conductor reconnects | `*stockholm reconnected* — was offline for 3m` |
+| Session launched | `*stockholm:* Starting saga session...` |
+| DS message → running session | `[DS → saga@stockholm] freya: <content>` |
+| Session ended | `*stockholm:* saga session complete — 12m, exit 0` |
+| Session duration alert | `[saga@stockholm] Session running for 30m` |
+| Realtime error | `*stockholm:* Realtime connection error, retrying...` |
 
-**Inbound (you → conductor):**
+Messages are truncated to Telegram's 4096 character limit and sent with Markdown parse mode.
+
+**Inbound — you → conductor:**
 
 | Your message | What happens |
 |---|---|
-| Free text (while a session is active) | Piped to the active session's stdin |
+| Free text while session active | Written to the active PTY session via `pty.write()` |
 | `@stockholm start saga for kalla` | Launches a new session on Stockholm |
-| `@laptop start freya for dogweek` | Launches on laptop (if online) |
-| `/status` | Reports which machines are online, active sessions |
-| `/stop` | Kills the active session on that machine |
+| `@laptop start freya for dogweek` | Posts to Design Space so the other machine picks it up |
+| `/status` | Reports active sessions with duration and thread IDs |
+| `/stop` | Kills the most recent active session |
 
-**Multi-session:** If multiple sessions are running, replies go to the most recent session by default. Use `@session-name` prefix to target a specific one.
+**Multi-session:** If multiple sessions are running, free text and `/stop` target the most recently launched session. `@machine` directives for other machines are forwarded via Design Space.
 
 ### 7. Startup & Recovery
 
@@ -231,15 +263,20 @@ node conductor.js --auto-launch --machine %MACHINE_NAME%
 ```
 
 **On startup, the conductor:**
-1. Connects to Supabase Realtime
-2. Sends Telegram: `{MACHINE_NAME} online`
-3. Checks Design Space for unread messages that arrived while offline
-4. Processes any that are targeted at this machine (FIFO by created_at)
+1. Loads `.env` from repo root, loads `agents.json`
+2. Connects to Supabase Realtime
+3. Sends Telegram: `*{MACHINE} online* — The Conductor is listening.`
+4. Checks Design Space for unread messages that arrived while offline
+5. **Reports** directed messages via log and Telegram — does NOT auto-launch old messages to avoid flooding
+6. Marks directed messages as read so they don't pile up on next restart
+
+The mark-read on startup only marks messages that are directed at this machine — filtered by `target_machine` matching or having a `to_agent` field. Broadcasts are left untouched.
 
 **On reconnect after sleep/network loss:**
-1. Supabase client auto-reconnects
-2. Conductor detects reconnection, sends Telegram notification
-3. Checks for messages missed during downtime
+1. Conductor polls channel state every 30 seconds
+2. Detects `joined` → `closed` → `joined` transitions
+3. Sends Telegram: `*{MACHINE} reconnected* — was offline for Xm`
+4. Re-checks for messages missed during downtime
 
 ### 8. Handoff Protocol
 
@@ -263,15 +300,15 @@ Any agent can trigger a handoff by posting to Design Space:
 }
 ```
 
-The receiving conductor sees this, launches the agent with:
+The receiving conductor sees this, launches an interactive Claude Code session via PTY, waits for the input prompt, then types the persona activation slash command:
 
 ```
-claude --print --prompt "You are Saga. You have a handoff to continue work on Kalla Fordonservice.
-Context: Phase 2 trigger map started, personas defined, need to map driving forces next.
-Thread ID: abc-123 — check Design Space for full conversation history.
-Working directory: C:\dev\Kalla-Fordonscervice\kalla-fordonsservice
-Begin by reading the thread and picking up where the previous session left off."
+/saga
 ```
+
+The slash command loads the full persona identity. The persona's own startup behavior checks Design Space for pending messages via `/u`, where it finds the handoff context and continues the work.
+
+This is a key design decision: the conductor does **not** pass complex prompts via CLI arguments. It activates the persona, and the persona handles the rest through its own Design Space integration.
 
 ### 9. Supervisor Layer — Observability & Safety
 
@@ -279,16 +316,24 @@ The conductor owns the stdout pipe from every session it launches. This makes it
 
 This matters because an agent that goes off the rails cannot report its own failure. A stuck loop won't self-diagnose. A hallucinated plan will be executed confidently. The conductor is the sober observer that the terminal agent never knows about.
 
-**MVP (keyword/heuristic):**
+**MVP implementation — duration-based only:**
 
 | Signal | Detection | Action |
 |---|---|---|
-| Repeated output | Same lines appearing 3+ times | Kill session, notify Telegram |
-| No output | Nothing for 10 minutes | Alert Telegram: "Session may be hung" |
-| Output flood | >1000 lines/minute | Alert Telegram: "Runaway generation?" |
-| Errors | Stack traces, "error", "failed" | Forward to Telegram immediately |
-| Completion | "done", session exit code 0 | Update work order status, notify Telegram |
-| Session end | Process exits | Capture last N lines as summary → Design Space |
+| Long session | Every 30 minutes of runtime | Alert Telegram: `[agent@machine] Session running for 30m` |
+| Session end | PTY process exits | Log exit code + duration + line count, notify Telegram, post last 20 lines to Design Space thread |
+
+The detailed keyword/heuristic detection from the original design is deferred to post-MVP. The output buffer is captured but not analyzed — it's available for the future smart mode.
+
+**Not yet implemented:**
+
+| Signal | Status |
+|---|---|
+| Repeated output detection | Post-MVP |
+| No-output hung detection | Post-MVP |
+| Output flood detection | Post-MVP |
+| Error/stack trace forwarding | Post-MVP |
+| Completion keyword detection | Post-MVP |
 
 **Smart mode (post-MVP, `--smart` flag):**
 
@@ -334,11 +379,11 @@ design-space/
 ```json
 {
   "@supabase/supabase-js": "^2.x",
-  "node-telegram-bot-api": "^0.66.x"
+  "node-pty": "native PTY for interactive terminal sessions"
 }
 ```
 
-Both already available via npm. No native modules, no build step.
+Telegram is handled via raw `fetch()` against the Bot API — no `node-telegram-bot-api` dependency needed. `node-pty` is a native module that requires a C++ build toolchain on install.
 
 ## Environment Variables
 
@@ -357,26 +402,34 @@ TELEGRAM_CHAT_ID=...
 
 ## MVP Scope
 
-### In scope
-- Supabase Realtime listener
-- Message routing by `target_machine`
-- Claim protocol (prevent double-pickup)
-- Terminal session spawning with configurable agent CLIs
-- stdin injection for mid-session Design Space updates
-- Telegram notifications (outbound)
-- Telegram commands (inbound): free text relay, `@machine` directives, `/status`, `/stop`
-- Task Scheduler startup
-- Reconnection after sleep/network loss
-- Unread message processing on startup
+### Implemented
+- Supabase Realtime listener on `design_space` table, filtered to `category=agent_message`
+- Message routing by `target_machine` and `to_agent`
+- Claim protocol via `update-status` with `in-progress`
+- Terminal session spawning via `node-pty` with configurable agent CLIs
+- PTY-based prompt injection with prompt-detection and 30s fallback
+- Mid-session nudging via `/u` command instead of raw stdin injection
+- Self-message filtering: ignores messages from own conductor and child sessions
+- Telegram notifications via raw `fetch()` with long-polling
+- Telegram commands: free text relay, `@machine` directives, `/status`, `/stop`
+- Reconnection detection via periodic channel state polling
+- Unread message reporting on startup with mark-read for directed messages only
+- Windows toast notifications via PowerShell BurntToast as fallback
+- Keyboard stdin passthrough to active PTY session
+- `CLAUDECODE` env var stripping to prevent nested-session detection
+- Graceful shutdown with SIGINT handler, session cleanup, and Telegram notification
+- Duration-based watchdog alerting every 30 minutes
 
-### Out of scope (post-MVP)
+### Not yet implemented
 - Windows service installation
-- Session resume (`--resume` with session IDs)
+- Session resume with session IDs
 - Web dashboard
 - Multi-user support
-- Agent output parsing/summarization
+- Agent output parsing/summarization — output buffer is captured but not analyzed
 - Cost tracking / rate limiting
-- Queue priority (FIFO is fine for MVP)
+- Queue priority
+- Keyword/heuristic supervisor detection
+- Agent presence registration/deregistration in Design Space
 
 ### Post-MVP: Smart Routing (`--smart` flag)
 

@@ -22,7 +22,7 @@ The webhook secret is a 16-32 character string you choose. You'll enter the same
 ### 3. Deploy the webhook
 
 ```bash
-supabase functions deploy webhook-fireflies --project-ref <your-ref>
+supabase functions deploy webhook-fireflies --project-ref <your-ref> --no-verify-jwt
 ```
 
 Your webhook URL will be:

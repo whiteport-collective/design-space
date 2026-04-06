@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
-// Design Space Channel — pushes agent messages into Claude Code sessions in real-time
-// Subscribes to Supabase Realtime for new messages, pushes as <channel source="design-space"> events
+// Agent Space Channel — pushes agent messages into Claude Code sessions in real-time
+// Subscribes to Supabase Realtime for new messages, pushes as <channel source="agent-space"> events
 // Two-way: Claude can reply and send messages back through the channel
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -29,7 +29,7 @@ const AGENT_MESSAGES_URL =
 
 if (!SUPABASE_URL || !SUPABASE_KEY) {
   console.error(
-    "Design Space Channel: DESIGN_SPACE_URL/DESIGN_SPACE_KEY or SUPABASE_URL/SUPABASE_ANON_KEY required"
+    "Agent Space Channel: DESIGN_SPACE_URL/DESIGN_SPACE_KEY or SUPABASE_URL/SUPABASE_ANON_KEY required"
   );
   process.exit(1);
 }
@@ -85,15 +85,15 @@ function formatSignalLabel(signal: string, msg: any): string {
 // --- MCP Server ---
 
 const mcp = new Server(
-  { name: "design-space", version: "1.0.0" },
+  { name: "agent-space", version: "1.0.0" },
   {
     capabilities: {
       experimental: { "claude/channel": {} },
       tools: {},
     },
-    instructions: `You are connected to Design Space, an agent communication and knowledge system.
+    instructions: `You are connected to Agent Space, an agent communication and knowledge system.
 
-Messages from other agents arrive as <channel source="design-space" signal="..." from_agent="..." message_type="..." ...>. The signal attribute indicates relevance:
+Messages from other agents arrive as <channel source="agent-space" signal="..." from_agent="..." message_type="..." ...>. The signal attribute indicates relevance:
 - strong: directed to you AND matches your project
 - medium: directed to you
 - weak: matches your project (sent to someone else)
@@ -101,7 +101,7 @@ Messages from other agents arrive as <channel source="design-space" signal="..."
 
 To reply to a message, use the ds_reply tool with the message_id from the tag.
 To send a new message, use the ds_send tool.
-To search Design Space knowledge, use the ds_search tool.
+To search Agent Space knowledge, use the ds_search tool.
 
 Always respond to strong and medium signals. Weak signals are informational. Available signals are ambient — act on them only if relevant to your current work.
 
@@ -116,7 +116,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "ds_reply",
       description:
-        "Reply to a Design Space message in its thread",
+        "Reply to an Agent Space message in its thread",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -163,7 +163,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "ds_search",
-      description: "Search Design Space knowledge by semantic query",
+      description: "Search Agent Space knowledge by semantic query",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -237,7 +237,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   }
 
   if (req.params.name === "ds_search") {
-    const resp = await fetch(`${AGENT_MESSAGES_URL}/search-design-space`, {
+    const resp = await fetch(`${AGENT_MESSAGES_URL}/search-knowledge`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${SUPABASE_KEY}`,
@@ -288,11 +288,11 @@ async function registerAgent() {
     const data = await resp.json();
     if (data.session_id) {
       sessionId = data.session_id;
-      console.error(`Design Space Channel: registered as ${sessionId}`);
+      console.error(`Agent Space Channel: registered as ${sessionId}`);
     }
     return data;
   } catch (err) {
-    console.error("Design Space Channel: registration failed:", err);
+    console.error("Agent Space Channel: registration failed:", err);
   }
 }
 
@@ -300,13 +300,13 @@ async function registerAgent() {
 
 function subscribeToMessages() {
   const channel = supabase
-    .channel("design-space-messages")
+    .channel("agent-space-messages")
     .on(
       "postgres_changes",
       {
         event: "INSERT",
         schema: "public",
-        table: "design_space",
+        table: "agent_space",
         filter: "category=eq.agent_message",
       },
       async (payload) => {
@@ -374,7 +374,7 @@ function subscribeToMessages() {
       {
         event: "INSERT",
         schema: "public",
-        table: "design_space",
+        table: "agent_space",
         filter: "category=eq.meeting_transcript",
       },
       async (payload) => {
@@ -401,7 +401,7 @@ function subscribeToMessages() {
       }
     )
     .subscribe((status) => {
-      console.error(`Design Space Channel: realtime ${status}`);
+      console.error(`Agent Space Channel: realtime ${status}`);
     });
 
   return channel;
@@ -414,5 +414,7 @@ await registerAgent();
 subscribeToMessages();
 
 console.error(
-  `Design Space Channel: listening as ${sessionId} (project: ${AGENT_PROJECT || "any"})`
+  `Agent Space Channel: listening as ${sessionId} (project: ${AGENT_PROJECT || "any"})`
 );
+
+

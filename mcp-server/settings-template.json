@@ -1,0 +1,27 @@
+{
+  "mcpServers": {
+    "agent-space": {
+      "command": "node",
+      "args": [
+        "~/.claude/agent-space-mcp/index.js"
+      ],
+      "env": {
+        "AGENT_ID": "saga",
+        "ORG_ID": "whiteport",
+        "AGENT_SPACE_URL": "https://your-project.supabase.co",
+        "AGENT_SPACE_KEY": "your-agent-space-key"
+      }
+    },
+    "local-mcp": {
+      "command": "node",
+      "args": [
+        "~/.claude/local-mcp/index.js"
+      ],
+      "env": {
+        "ORG_ID": "whiteport",
+        "AGENT_SPACE_URL": "https://your-project.supabase.co",
+        "AGENT_SPACE_KEY": "your-agent-space-key"
+      }
+    }
+  }
+}

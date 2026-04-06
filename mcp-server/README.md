@@ -1,128 +1,92 @@
-# Design Space MCP Server
+# MCP Proxy For Agent Space
 
-Cross-LLM, cross-IDE agent communication and design knowledge capture via the [Design Space](https://github.com/whiteport-collective/design-space).
+This folder now contains the Phase 1 MCP proxy pattern for Agent Space. It replaces the old habit of booting several MCP servers and paying the manifest cost up front on every session.
 
-## What This Does
+## What This Replaces
 
-An MCP server that gives AI agents the ability to:
+The old setup loaded every manifest at boot: Google Workspace, browser tools, Supabase, Fireflies, and other integrations. That burns roughly 27k tokens before the agent does useful work.
 
-- **Talk to each other** across LLMs and IDEs (Claude Code, ChatGPT, Cursor, Windsurf, etc.)
-- **Capture design knowledge** with semantic + visual embeddings
-- **Search accumulated knowledge** across projects
-- **Learn designer preferences** via feedback pairs (before/after)
-- **Detect red flags** — check designs against known rejections before presenting
+The proxy split keeps the boot manifest small and only loads capability code when the agent actually needs it.
 
-Messages are knowledge — every agent conversation gets embedded and becomes searchable design memory forever.
+## Two-MCP Split
 
-## Quick Start
+- `agent-space-mcp/`
+  Cloud-side MCP with a minimal manifest:
+  `agent_space_list_plugins`, `agent_space_get_plugin`, `agent_space_check_messages`, `agent_space_post_message`, `agent_space_update_status`
+- `local-mcp/`
+  Machine-side MCP with one meta-tool:
+  `load_plugin`
 
-### 1. Install
+Cloud integrations stay in Agent Space. Machine-bound integrations stay local.
 
-```bash
-git clone https://github.com/whiteport-collective/design-space.git
-cd design-space/mcp-server
-npm install
+## Lazy Loading Flow
+
+1. Call `agent_space_list_plugins` to see what the org is authorized to use.
+2. Call `agent_space_get_plugin` for a specific plugin.
+3. Pass the returned `code` into `local-mcp.load_plugin`.
+4. `local-mcp` writes the module into `local-mcp/tools/_loaded_<name>.js`, imports it, and registers its exported tools at runtime.
+
+If a tool is never needed, it is never loaded and never appears in the session manifest.
+
+## Files
+
+```text
+mcp-server/
+  agent-space-mcp/
+    index.js
+    package.json
+  local-mcp/
+    index.js
+    tools/.gitkeep
+  plugins/
+    fireflies-stub.js
+    google-workspace-stub.js
+    github-stub.js
+  settings-template.json
 ```
 
-### 2. Configure
+`index.js` at the root is left intact for the legacy single-server flow.
 
-```bash
-cp .env.example .env
-# Edit .env with your Supabase project URL and anon key
+## Install
+
+1. Copy `agent-space-mcp/`, `local-mcp/`, `plugins/`, and `settings-template.json` into `~/.claude/`.
+2. Replace the placeholder URL/key values in your settings.
+3. Make sure the copied location can resolve these Node dependencies:
+   `@modelcontextprotocol/sdk`, `@supabase/supabase-js`, `zod`
+
+Example layout:
+
+```text
+~/.claude/
+  agent-space-mcp/
+    index.js
+    package.json
+  local-mcp/
+    index.js
+    tools/
+  plugins/
+    fireflies-stub.js
+    google-workspace-stub.js
+    github-stub.js
+  settings.json
 ```
 
-### 3. Add to Your IDE
+## Settings
 
-**Claude Code** (`.claude/settings.local.json`):
-```json
-{
-  "mcpServers": {
-    "design-space": {
-      "command": "node",
-      "args": ["/absolute/path/to/design-space/mcp-server/index.js"],
-      "env": {
-        "DESIGN_SPACE_URL": "https://your-project.supabase.co",
-        "DESIGN_SPACE_ANON_KEY": "your-anon-key",
-        "AGENT_ID": "saga",
-        "AGENT_NAME": "Saga (Analyst)",
-        "AGENT_PLATFORM": "claude-code",
-        "AGENT_PROJECT": "my-project",
-        "AGENT_FRAMEWORK": "WDS"
-      }
-    }
-  }
-}
-```
+`settings-template.json` shows the intended shape. The pattern is always two entries:
 
-**Cursor** (`.cursor/mcp.json`) — same structure.
+- `agent-space` for cloud services and Agent Space state
+- `local-mcp` for localhost-only tools and runtime plugin injection
 
-**Other IDEs** — any platform that supports MCP can use this server. For platforms without MCP support, POST to the Edge Functions directly (see root README).
+## Plugin Stubs
 
-## MCP Tools (14)
+Phase 1 ships three stub plugins:
 
-### Knowledge Capture
-| Tool | Purpose |
-|------|---------|
-| `capture_knowledge` | Store design insights, patterns, methodology learnings |
-| `capture_visual` | Capture screenshot + description with dual embeddings |
-| `capture_feedback_pair` | Linked before/after design feedback with reasoning |
-| `recent_knowledge` | Show recent entries |
-| `space_stats` | Overview statistics |
+- `fireflies`
+  Returns recent meeting transcripts from cached `agent_space` rows
+- `google_workspace`
+  Returns cached calendar/email rows when sync exists, otherwise tells the agent to ask Idun
+- `github`
+  Returns cached pull request rows when sync exists, otherwise tells the agent to ask Idun
 
-### Search
-| Tool | Purpose |
-|------|---------|
-| `search_space` | Semantic search across all knowledge |
-| `search_visual_similarity` | Find visually similar patterns |
-| `search_preference_patterns` | Red flag detection — check against rejections |
-
-### Agent Messaging
-| Tool | Purpose |
-|------|---------|
-| `send_agent_message` | Send message to another agent |
-| `check_agent_messages` | Check inbox for unread messages |
-| `respond_to_message` | Reply to a message thread |
-| `register_presence` | Update agent status and identity |
-| `who_online` | See which agents are active |
-| `check_notifications` | Check real-time notification queue |
-
-## Environment Variables
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `DESIGN_SPACE_URL` | Yes | Supabase project URL |
-| `DESIGN_SPACE_ANON_KEY` | Yes | Supabase anonymous key |
-| `AGENT_ID` | No | Agent identity (e.g., "saga", "freya") |
-| `AGENT_NAME` | No | Display name (e.g., "Saga (Analyst)") |
-| `AGENT_PLATFORM` | No | Platform (default: "claude-code") |
-| `AGENT_PROJECT` | No | Project scope |
-| `AGENT_FRAMEWORK` | No | Methodology (e.g., "WDS") |
-
-## Architecture
-
-```
-Your IDE (Claude Code, Cursor, etc.)
-  └── MCP Protocol
-       └── design-space/mcp-server (this server)
-            └── HTTP
-                 └── Supabase Edge Functions (universal API)
-                      └── PostgreSQL + pgvector
-```
-
-The MCP server is a thin wrapper. The real work happens in the Edge Functions — which any HTTP client can call directly. This means:
-
-- **Claude Code / Cursor / Windsurf** → use this MCP server
-- **ChatGPT** → use the OpenAPI spec with Custom GPT Actions
-- **Any other tool** → POST to the Edge Functions directly
-
-## Dashboard
-
-Open `dashboard.html` in a browser to see agent conversations in real-time. It connects directly to Supabase from the browser — no server needed.
-
-## Part of WDS
-
-This server is part of the [Whiteport Design Studio](https://github.com/whiteport-collective/whiteport-design-studio) methodology. Install WDS for the full agent-driven design workflow with Saga (Strategy) and Freya (Design).
-
-## License
-
-MIT
+These stubs are what `agent_space_get_plugin` returns today. Later phases can replace them with full capability modules without changing the two-MCP contract.

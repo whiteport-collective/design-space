@@ -1,32 +1,25 @@
 #!/usr/bin/env node
 /**
- * Sync agent instructions from WDS repo to Design Space.
+ * Compile WDS default instructions and sync them to Agent Space.
  *
- * Reads agent definitions, activation files, and skill files
- * and stores them in Design Space as category: "agent_instruction".
- *
- * Usage:
- *   node sync-instructions.js                    # sync all
- *   node sync-instructions.js --agent saga       # sync one agent
- *   node sync-instructions.js --dry-run          # preview only
- *
- * Run this after pushing changes to the WDS repo.
- * In the future: GitHub webhook triggers this automatically.
+ * Output model:
+ * - one row per agent/model/skill_level in `agent_instructions`
+ * - skill_level is `wds_default`
+ * - shared instructions use agent_id = "*"
  */
 
 import { readFileSync, existsSync } from 'fs';
-import { join, basename, dirname } from 'path';
+import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { createHash } from 'crypto';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// --- Config ---
 const WDS_ROOT = process.env.WDS_ROOT || 'c:/dev/WDS/whiteport-design-studio';
 const DS_URL = process.env.DESIGN_SPACE_URL || 'https://uztngidbpduyodrabokm.supabase.co';
 const DS_KEY = process.env.DESIGN_SPACE_ANON_KEY || '';
+const MODEL_TARGET = process.env.AGENT_MODEL_TARGET || 'claude';
 
-// Load .env from design-space repo
 const envPath = join(__dirname, '..', '.env');
 if (existsSync(envPath)) {
   const envContent = readFileSync(envPath, 'utf8');
@@ -48,184 +41,131 @@ const AGENT_FILTER = (() => {
   return idx !== -1 ? process.argv[idx + 1] : null;
 })();
 
-// --- Instruction map ---
-const instructions = [];
+const collected = [];
 
-function addInstruction(agent, type, name, filePath, layer = 'framework') {
+function addInstruction(agent, type, name, filePath) {
   if (AGENT_FILTER && agent !== AGENT_FILTER && agent !== '*') return;
   if (!existsSync(filePath)) {
     console.warn(`  SKIP (not found): ${filePath}`);
     return;
   }
-  const content = readFileSync(filePath, 'utf8');
-  const hash = createHash('sha256').update(content).digest('hex').substring(0, 12);
-
-  instructions.push({
+  collected.push({
     agent,
     type,
     name,
     filePath: filePath.replace(/\\/g, '/'),
-    content,
-    hash,
-    layer,
+    content: readFileSync(filePath, 'utf8').trim(),
   });
 }
 
-// --- Collect instructions ---
 console.log(`Scanning WDS repo: ${WDS_ROOT}`);
 console.log();
 
-// Agent YAML definitions
-addInstruction('saga', 'persona', 'saga-analyst.agent.yaml',
-  join(WDS_ROOT, 'src/agents/saga-analyst.agent.yaml'));
-addInstruction('freya', 'persona', 'freya-ux.agent.yaml',
-  join(WDS_ROOT, 'src/agents/freya-ux.agent.yaml'));
+addInstruction('saga', 'persona', 'saga-analyst.agent.yaml', join(WDS_ROOT, 'src/agents/saga-analyst.agent.yaml'));
+addInstruction('freya', 'persona', 'freya-ux.agent.yaml', join(WDS_ROOT, 'src/agents/freya-ux.agent.yaml'));
+addInstruction('saga', 'activation', 'saga.activation.md', join(WDS_ROOT, 'src/skills/saga.activation.md'));
+addInstruction('freya', 'activation', 'freya.activation.md', join(WDS_ROOT, 'src/skills/freya.activation.md'));
+addInstruction('saga', 'skill', 'saga-skill.md', join(WDS_ROOT, 'src/skills/saga/SKILL.md'));
+addInstruction('freya', 'skill', 'freya-skill.md', join(WDS_ROOT, 'src/skills/freya/SKILL.md'));
+addInstruction('*', 'skill', 'design-space-skill.md', join(WDS_ROOT, 'src/skills/design-space/SKILL.md'));
 
-// Activation files
-addInstruction('saga', 'activation', 'saga.activation.md',
-  join(WDS_ROOT, 'src/skills/saga.activation.md'));
-addInstruction('freya', 'activation', 'freya.activation.md',
-  join(WDS_ROOT, 'src/skills/freya.activation.md'));
-
-// Skill definitions
-addInstruction('saga', 'skill', 'saga-skill.md',
-  join(WDS_ROOT, 'src/skills/saga/SKILL.md'));
-addInstruction('freya', 'skill', 'freya-skill.md',
-  join(WDS_ROOT, 'src/skills/freya/SKILL.md'));
-addInstruction('*', 'skill', 'design-space-skill.md',
-  join(WDS_ROOT, 'src/skills/design-space/SKILL.md'));
-
-// Saga references
 const sagaRefs = [
   'discovery-conversation.md', 'trigger-mapping.md', 'dream-up-approach.md',
   'strategic-documentation.md', 'conversational-followups.md', 'seo-strategy-guide.md',
   'content-structure-principles.md', 'inspiration-analysis.md', 'working-with-existing-materials.md',
 ];
 for (const ref of sagaRefs) {
-  addInstruction('saga', 'reference', ref,
-    join(WDS_ROOT, 'src/skills/saga/references', ref));
+  addInstruction('saga', 'reference', ref, join(WDS_ROOT, 'src/skills/saga/references', ref));
 }
 
-// Freya references
 const freyaRefs = [
   'strategic-design.md', 'specification-quality.md', 'agentic-development.md',
   'content-creation.md', 'design-system.md', 'meta-content-guide.md',
 ];
 for (const ref of freyaRefs) {
-  addInstruction('freya', 'reference', ref,
-    join(WDS_ROOT, 'src/skills/freya/references', ref));
+  addInstruction('freya', 'reference', ref, join(WDS_ROOT, 'src/skills/freya/references', ref));
 }
 
-// Workflow master files (just the workflow.md orchestrators, not all steps)
 const workflows = [
-  { phase: '0', name: 'alignment-signoff', file: '0-alignment-signoff/workflow.md', agent: 'saga' },
-  { phase: '0', name: 'project-setup', file: '0-project-setup/workflow.md', agent: '*' },
-  { phase: '1', name: 'project-brief', file: '1-project-brief/workflow.md', agent: 'saga' },
-  { phase: '2', name: 'trigger-mapping', file: '2-trigger-mapping/workflow.md', agent: 'saga' },
-  { phase: '3', name: 'scenarios', file: '3-scenarios/workflow.md', agent: 'freya' },
-  { phase: '4', name: 'ux-design', file: '4-ux-design/workflow.md', agent: 'freya' },
-  { phase: '5', name: 'agentic-development', file: '5-agentic-development/workflow.md', agent: 'mimir' },
-  { phase: '6', name: 'asset-generation', file: '6-asset-generation/workflow.md', agent: 'freya' },
-  { phase: '7', name: 'design-system', file: '7-design-system/workflow.md', agent: 'freya' },
-  { phase: '8', name: 'product-evolution', file: '8-product-evolution/workflow.md', agent: 'idunn' },
+  { name: 'alignment-signoff', file: '0-alignment-signoff/workflow.md', agent: 'saga' },
+  { name: 'project-setup', file: '0-project-setup/workflow.md', agent: '*' },
+  { name: 'project-brief', file: '1-project-brief/workflow.md', agent: 'saga' },
+  { name: 'trigger-mapping', file: '2-trigger-mapping/workflow.md', agent: 'saga' },
+  { name: 'scenarios', file: '3-scenarios/workflow.md', agent: 'freya' },
+  { name: 'ux-design', file: '4-ux-design/workflow.md', agent: 'freya' },
+  { name: 'agentic-development', file: '5-agentic-development/workflow.md', agent: 'mimir' },
+  { name: 'asset-generation', file: '6-asset-generation/workflow.md', agent: 'freya' },
+  { name: 'design-system', file: '7-design-system/workflow.md', agent: 'freya' },
+  { name: 'product-evolution', file: '8-product-evolution/workflow.md', agent: 'idunn' },
 ];
 for (const wf of workflows) {
-  addInstruction(wf.agent, 'workflow', `workflow-${wf.name}.md`,
-    join(WDS_ROOT, 'src/workflows', wf.file));
+  addInstruction(wf.agent, 'workflow', `workflow-${wf.name}.md`, join(WDS_ROOT, 'src/workflows', wf.file));
 }
 
-// --- Summary ---
-console.log(`Found ${instructions.length} instruction files:`);
-const byAgent = {};
-for (const i of instructions) {
-  byAgent[i.agent] = (byAgent[i.agent] || 0) + 1;
+const grouped = new Map();
+for (const item of collected) {
+  const existing = grouped.get(item.agent) || [];
+  existing.push(item);
+  grouped.set(item.agent, existing);
 }
-for (const [agent, count] of Object.entries(byAgent)) {
-  console.log(`  ${agent}: ${count} files`);
+
+function compileContent(agent, items) {
+  const sorted = [...items].sort((a, b) => {
+    if (a.type !== b.type) return a.type.localeCompare(b.type);
+    return a.name.localeCompare(b.name);
+  });
+  const body = sorted.map((item) => `## ${item.type}: ${item.name}\nSource: ${item.filePath}\n\n${item.content}`).join('\n\n');
+  return `# WDS Default Instructions\n\nAgent: ${agent}\nModel target: ${MODEL_TARGET}\n\n${body}\n`;
+}
+
+const compiledRows = [...grouped.entries()].map(([agent, items]) => {
+  const content = compileContent(agent, items);
+  return {
+    agent_id: agent,
+    model_target: MODEL_TARGET,
+    skill_level: 'wds_default',
+    content,
+    version: createHash('sha256').update(content).digest('hex').substring(0, 12),
+  };
+});
+
+console.log(`Compiled ${compiledRows.length} instruction bundle(s):`);
+for (const row of compiledRows) {
+  console.log(`  ${row.agent_id}: ${row.content.length} chars (${row.version})`);
 }
 console.log();
 
 if (DRY_RUN) {
-  console.log('DRY RUN — not uploading. Files:');
-  for (const i of instructions) {
-    console.log(`  [${i.agent}] ${i.type}/${i.name} (${i.content.length} chars, hash: ${i.hash})`);
-  }
+  console.log('DRY RUN - not uploading.');
   process.exit(0);
 }
 
-// --- Upload to Design Space ---
-console.log('Uploading to Design Space...');
+async function request(method, path, body) {
+  const response = await fetch(`${SUPABASE_URL}${path}`, {
+    method,
+    headers: {
+      'Authorization': `Bearer ${SUPABASE_KEY}`,
+      'apikey': SUPABASE_KEY,
+      'Content-Type': 'application/json',
+      'Prefer': 'return=representation',
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!response.ok) {
+    throw new Error(`${method} ${path} failed: ${response.status} ${await response.text()}`);
+  }
+  const text = await response.text();
+  return text ? JSON.parse(text) : null;
+}
 
 let uploaded = 0;
-let skipped = 0;
-let failed = 0;
-
-for (const instr of instructions) {
-  try {
-    // Check if this version already exists
-    const searchRes = await fetch(`${SUPABASE_URL}/functions/v1/search-design-space`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${SUPABASE_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        query: `agent_instruction ${instr.agent} ${instr.name}`,
-        category: 'agent_instruction',
-        limit: 1,
-      }),
-    });
-    const searchData = await searchRes.json();
-    const existing = searchData.results?.[0];
-
-    // Skip if same hash (content unchanged)
-    if (existing?.metadata?.hash === instr.hash) {
-      skipped++;
-      continue;
-    }
-
-    // Delete old version if exists
-    // (We can't delete via the API, so we'll just insert — duplicates get filtered by hash on read)
-
-    // Upload
-    const res = await fetch(`${SUPABASE_URL}/functions/v1/capture-design-space`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${SUPABASE_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        content: instr.content,
-        category: 'agent_instruction',
-        project: 'wds',
-        designer: instr.agent,
-        topics: [instr.type, instr.agent, 'wds-1.0'],
-        components: [instr.name],
-        source: 'sync-instructions',
-        source_file: instr.filePath,
-        metadata: {
-          agent: instr.agent,
-          type: instr.type,
-          name: instr.name,
-          layer: instr.layer,
-          hash: instr.hash,
-        },
-      }),
-    });
-
-    if (res.ok) {
-      uploaded++;
-      console.log(`  ✓ [${instr.agent}] ${instr.type}/${instr.name}`);
-    } else {
-      failed++;
-      const err = await res.text();
-      console.error(`  ✗ [${instr.agent}] ${instr.type}/${instr.name}: ${err}`);
-    }
-  } catch (err) {
-    failed++;
-    console.error(`  ✗ [${instr.agent}] ${instr.type}/${instr.name}: ${err.message}`);
-  }
+for (const row of compiledRows) {
+  const filter = `agent_id=eq.${encodeURIComponent(row.agent_id)}&model_target=eq.${encodeURIComponent(row.model_target)}&skill_level=eq.wds_default`;
+  await request('DELETE', `/rest/v1/agent_instructions?${filter}`, null);
+  await request('POST', '/rest/v1/agent_instructions', row);
+  uploaded += 1;
+  console.log(`  uploaded ${row.agent_id} (${row.version})`);
 }
 
 console.log();
-console.log(`Done: ${uploaded} uploaded, ${skipped} unchanged, ${failed} failed`);
+console.log(`Done: ${uploaded} instruction bundle(s) uploaded`);

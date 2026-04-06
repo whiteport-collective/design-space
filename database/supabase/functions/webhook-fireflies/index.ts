@@ -1,4 +1,4 @@
-// webhook-fireflies: Receive Fireflies.ai webhook, fetch transcript, chunk, store in Design Space
+// webhook-fireflies: Receive Fireflies.ai webhook, fetch transcript, chunk, store in Agent Space
 // POST { meetingId, eventType, clientReferenceId }
 // Env: FIREFLIES_API_KEY, FIREFLIES_WEBHOOK_SECRET, OPENROUTER_API_KEY (optional)
 
@@ -10,7 +10,7 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-// --- Embedding (same pattern as capture-design-space) ---
+// --- Embedding (same pattern as capture-knowledge) ---
 
 async function getEmbedding(text: string): Promise<number[] | null> {
   const openRouterKey = Deno.env.get("OPENROUTER_API_KEY");
@@ -55,7 +55,9 @@ async function verifySignature(body: string, signature: string | null, secret: s
     .map(b => b.toString(16).padStart(2, "0"))
     .join("");
 
-  return signature === expected;
+  // Support both raw hex and "sha256=<hex>" prefix formats
+  const normalized = signature.startsWith("sha256=") ? signature.slice(7) : signature;
+  return normalized === expected;
 }
 
 // --- Fireflies GraphQL client (inlined) ---
@@ -331,7 +333,7 @@ serve(async (req) => {
     // Check for existing chunks (handles both full duplicates and partial writes)
     const sourceFile = `fireflies:${meetingId}`;
     const { data: existing } = await supabase
-      .from("design_space")
+      .from("agent_space")
       .select("id, content, metadata")
       .eq("source_file", sourceFile);
 
@@ -371,7 +373,7 @@ serve(async (req) => {
       const embedding = await getEmbedding(chunk.content);
 
       const { data: entry, error } = await supabase
-        .from("design_space")
+        .from("agent_space")
         .insert({
           content: chunk.content,
           category: "meeting_transcript",
@@ -425,7 +427,7 @@ serve(async (req) => {
     const thread_id = crypto.randomUUID();
     const notifEmbedding = await getEmbedding(notificationContent);
 
-    await supabase.from("design_space").insert({
+    await supabase.from("agent_space").insert({
       content: notificationContent,
       category: "agent_message",
       project,
@@ -461,3 +463,4 @@ serve(async (req) => {
     return jsonResponse({ error: err.message }, 500);
   }
 });
+

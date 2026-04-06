@@ -122,15 +122,18 @@ def main():
 
     # 3. Save learned content to semantic knowledge base
     if learned:
-        post("capture-knowledge", {
-            "content": f"[{base_agent} · {args.repo} · {today}]\n\n{learned}",
-            "category": "agent_experience",
-            "project": args.repo,
-            "designer": base_agent,
-            "topics": ["learned", "session-wrap", base_agent, args.repo],
-            "source": "wrap",
-        })
-        print("Learned content saved to knowledge base.")
+        try:
+            post("capture-knowledge", {
+                "content": f"[{base_agent} \u00b7 {args.repo} \u00b7 {today}]\n\n{learned}",
+                "category": "agent_experience",
+                "project": args.repo,
+                "designer": base_agent,
+                "topics": ["learned", "session-wrap", base_agent, args.repo],
+                "source": "wrap",
+            })
+            print("Learned content saved to knowledge base.")
+        except RuntimeError as e:
+            print(f"Warning: knowledge capture skipped — {e}", file=sys.stderr)
 
     # 4. Sync design-process files
     dp = root / "design-process"

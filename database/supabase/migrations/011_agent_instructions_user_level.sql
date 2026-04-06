@@ -1,12 +1,9 @@
--- Migration 011: Add user level to skill hierarchy
--- Users can save personal skills into Agent Space — stored, synced, and
--- applied on top of all org/client/project/repo levels.
--- Resolution order: wds_default → org → client → project → repo → user
+-- Migration 011: optional user-level instruction extension
+-- This is not part of the core five-level WDS-E hierarchy.
+-- It allows personal overlays to be layered on top when a user_id is supplied.
 
--- Add user_id column
 alter table public.agent_instructions add column if not exists user_id text;
 
--- Update the skill_level check constraint to include 'user'
 alter table public.agent_instructions
   drop constraint if exists agent_instructions_skill_level_check;
 
@@ -14,18 +11,19 @@ alter table public.agent_instructions
   add constraint agent_instructions_skill_level_check
   check (skill_level in ('wds_default', 'org', 'client', 'project', 'repo', 'user'));
 
--- Update the unique constraint to include user_id
-alter table public.agent_instructions
-  drop constraint if exists agent_instructions_agent_id_model_target_skill_level_coalesce_key;
+drop index if exists public.idx_agent_instructions_unique_scope;
+create unique index if not exists idx_agent_instructions_unique_scope
+  on public.agent_instructions (
+    agent_id,
+    model_target,
+    skill_level,
+    coalesce(org_id, ''),
+    coalesce(client_id, ''),
+    coalesce(project, ''),
+    coalesce(repo, ''),
+    coalesce(user_id, '')
+  );
 
--- Recreate with user_id included
-alter table public.agent_instructions
-  add constraint agent_instructions_unique_scope
-  unique (agent_id, model_target, skill_level,
-          coalesce(org_id, ''), coalesce(client_id, ''),
-          coalesce(project, ''), coalesce(repo, ''), coalesce(user_id, ''));
-
--- Update resolve function to include user level
 create or replace function public.resolve_agent_instructions(
   p_agent_id     text,
   p_model_target text default 'claude',
@@ -36,9 +34,12 @@ create or replace function public.resolve_agent_instructions(
   p_user_id      text default null
 )
 returns setof public.agent_instructions
-language sql stable as $$
-  select * from public.agent_instructions
-  where agent_id = p_agent_id
+language sql
+stable
+as $$
+  select *
+  from public.agent_instructions
+  where agent_id in (p_agent_id, '*')
     and model_target = p_model_target
     and (
       skill_level = 'wds_default'
@@ -56,5 +57,6 @@ language sql stable as $$
       when 'project'     then 4
       when 'repo'        then 5
       when 'user'        then 6
-    end;
+    end,
+    updated_at asc;
 $$;

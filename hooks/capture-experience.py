@@ -47,7 +47,7 @@ def capture_experience():
         f"{transcript_summary}"
     )
 
-    # Post to Design Space as agent_experience
+    # Post to Agent Space as agent_experience
     payload = json.dumps({
         "content": content,
         "category": "agent_experience",
@@ -58,7 +58,7 @@ def capture_experience():
     }).encode("utf-8")
 
     req = urllib.request.Request(
-        f"{SUPABASE_URL}/functions/v1/capture-design-space",
+        f"{SUPABASE_URL}/functions/v1/capture-knowledge",
         data=payload,
         headers={
             "Content-Type": "application/json",
@@ -71,7 +71,7 @@ def capture_experience():
         with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read())
             if data.get("entry"):
-                print(f"Experience captured to Design Space: {content[:100]}...")
+                print(f"Experience captured to Agent Space: {content[:100]}...")
     except Exception as e:
         print(f"Warning: Could not capture experience: {e}", file=sys.stderr)
 

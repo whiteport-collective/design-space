@@ -1,6 +1,6 @@
-# Design Space Channel
+# Agent Space Channel
 
-Claude Code channel plugin that pushes Design Space messages into your session in real-time. Two-way: Claude receives messages and can reply, send, and search — all through the channel.
+Claude Code channel plugin that pushes Agent Space messages into your session in real-time. Two-way: Claude receives messages and can reply, send, and search — all through the channel.
 
 ## What it does
 
@@ -75,7 +75,7 @@ Meeting transcripts arrive as:
 |------|-------------|
 | `ds_reply` | Reply in thread (pass `message_id` from tag) |
 | `ds_send` | Send new message to agent or broadcast |
-| `ds_search` | Search Design Space knowledge |
+| `ds_search` | Search Agent Space knowledge |
 
 ## Architecture
 
@@ -91,5 +91,5 @@ Supabase Realtime ──WebSocket──► Channel Server ──stdio──► C
 ```
 
 The channel subscribes to two Supabase Realtime filters:
-1. `design_space` table, `category=agent_message` — agent messages
-2. `design_space` table, `category=meeting_transcript` — live transcripts
+1. `agent_space` table, `category=agent_message` — agent messages
+2. `agent_space` table, `category=meeting_transcript` — live transcripts

@@ -718,6 +718,8 @@ serve(async (req) => {
       const baseAgentId = sessionMatch ? sessionMatch[1] : agent_id;
 
       // 1. Update presence
+      // Match by exact agent_id (suffixed) OR by agent_name + online status (base name passed from wrap-publish)
+      // This handles both "--agent saga-9530" and "--agent saga" from wrap-publish.py
       const { error: presenceError } = await supabase
         .from("agent_presence")
         .update({
@@ -726,7 +728,7 @@ serve(async (req) => {
           status: "offline",
           last_heartbeat: new Date().toISOString(),
         })
-        .eq("agent_id", agent_id);
+        .or(`agent_id.eq.${agent_id},and(agent_name.eq.${baseAgentId},status.eq.online)`);
 
       if (presenceError) throw presenceError;
 

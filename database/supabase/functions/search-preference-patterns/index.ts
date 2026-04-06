@@ -9,25 +9,34 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-async function getSemanticEmbedding(text: string): Promise<number[]> {
+async function getSemanticEmbedding(text: string): Promise<number[] | null> {
   const openRouterKey = Deno.env.get("OPENROUTER_API_KEY");
-  if (!openRouterKey) throw new Error("OPENROUTER_API_KEY not set");
+  if (!openRouterKey) return null;
 
-  const response = await fetch("https://openrouter.ai/api/v1/embeddings", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${openRouterKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: "openai/text-embedding-3-small",
-      input: text,
-    }),
-  });
+  try {
+    const response = await fetch("https://openrouter.ai/api/v1/embeddings", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${openRouterKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "openai/text-embedding-3-small",
+        input: text,
+      }),
+    });
 
-  if (!response.ok) throw new Error(`Semantic embedding error: ${response.status}`);
-  const data = await response.json();
-  return data.data[0].embedding;
+    if (!response.ok) {
+      console.warn(`search-preference-patterns semantic embedding unavailable: ${response.status}`);
+      return null;
+    }
+
+    const data = await response.json();
+    return data.data[0]?.embedding ?? null;
+  } catch (error) {
+    console.warn("search-preference-patterns semantic embedding request failed:", error);
+    return null;
+  }
 }
 
 async function getVisualEmbedding(imageBase64: string): Promise<number[] | null> {
@@ -84,26 +93,41 @@ serve(async (req) => {
     const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const supabase = createClient(supabaseUrl, supabaseKey);
 
-    // Search for rejected patterns that match semantically
-    const { data: semanticMatches, error: semErr } = await supabase.rpc("search_design_space", {
-      query_embedding: semanticEmb,
-      similarity_threshold: semantic_threshold,
-      match_count: limit,
-      filter_category: null,
-      filter_project: project || null,
-      filter_designer: designer,
-    });
+    let results = [];
 
-    if (semErr) throw semErr;
+    if (semanticEmb) {
+      const { data: semanticMatches, error: semErr } = await supabase.rpc("search_agent_space", {
+        query_embedding: semanticEmb,
+        similarity_threshold: semantic_threshold,
+        match_count: limit,
+        filter_category: null,
+        filter_project: project || null,
+        filter_designer: designer,
+      });
 
-    // Filter to only rejected patterns
-    let results = (semanticMatches || []).filter((r: any) => r.pattern_type === "rejected");
+      if (semErr) throw semErr;
+      results = (semanticMatches || []).filter((r: any) => r.pattern_type === "rejected");
+    } else {
+      let fallbackQuery = supabase
+        .from("agent_space")
+        .select("id, content, pair_id, pattern_type, project, designer")
+        .eq("pattern_type", "rejected")
+        .ilike("content", `%${description}%`)
+        .limit(limit);
+
+      if (project) fallbackQuery = fallbackQuery.eq("project", project);
+      if (designer) fallbackQuery = fallbackQuery.eq("designer", designer);
+
+      const { data: semanticMatches, error: semErr } = await fallbackQuery;
+      if (semErr) throw semErr;
+      results = semanticMatches || [];
+    }
 
     // For each rejected match, find its paired "approved" alternative
     for (const result of results) {
       if (result.pair_id) {
         const { data: paired } = await supabase
-          .from("design_space")
+          .from("agent_space")
           .select("content, pattern_type")
           .eq("pair_id", result.pair_id)
           .eq("pattern_type", "approved")
@@ -141,7 +165,11 @@ serve(async (req) => {
       }
     }
 
-    return new Response(JSON.stringify({ results }), {
+    return new Response(JSON.stringify({
+      results,
+      semantic_embedding_available: Boolean(semanticEmb),
+      visual_embedding_available: Boolean(visualEmb),
+    }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (err) {
@@ -151,3 +179,5 @@ serve(async (req) => {
     });
   }
 });
+
+

@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Register Codex presence, load context, and print current Design Space inbox."""
+"""Register Codex presence, load Agent Space boot data, and print the current inbox."""
 
 from __future__ import annotations
 
 import argparse
 import sys
-from typing import Any
 
 from design_space import (
+    DEFAULT_MODEL,
     DesignSpaceClient,
     DesignSpaceError,
     env_path,
@@ -18,43 +18,32 @@ from design_space import (
 )
 
 
-def print_results(title: str, results: list[dict[str, Any]], limit: int) -> None:
-    if not results:
-        print(f"{title}: none")
-        return
-
-    print(f"{title}:")
-    for item in results[:limit]:
-        content = item.get("content", "").strip().replace("\n", " ")
-        print(f"- {content[:160]}")
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--working-on", help="Current task description for agent presence.")
     parser.add_argument("--workspace", help="Workspace path or label for agent presence.")
-    parser.add_argument("--message-limit", type=int, default=10, help="How many recent messages to check.")
-    parser.add_argument("--context-limit", type=int, default=5, help="How many context results to print per search.")
+    parser.add_argument("--message-limit", type=int, default=10, help="How many recent messages to fetch.")
+    parser.add_argument("--project", help="Override project for the boot request.")
+    parser.add_argument("--repo", help="Optional repo scope for the boot request.")
     args = parser.parse_args()
 
     load_dotenv()
 
     try:
         client = DesignSpaceClient()
-        registration = client.register(status="online", working_on=args.working_on, workspace=args.workspace)
-        context = client.search(
-            "recent agent session activity, decisions, constraints, and handoff notes",
-            category="agent_experience",
-            limit=args.context_limit,
-            threshold=0.25,
+        registration = client.register(
+            status="online",
+            working_on=args.working_on,
+            workspace=args.workspace,
+            project=args.project or client.config.get("project"),
+            repo=args.repo,
         )
-        constraints = client.search(
-            "constraint rejection preference requirement",
-            category="client_feedback",
-            limit=args.context_limit,
-            threshold=0.2,
+        boot = client.session_start(
+            project=args.project or client.config.get("project"),
+            repo=args.repo,
+            model_target=client.config.get("model") or DEFAULT_MODEL,
+            message_limit=args.message_limit,
         )
-        message_data = client.check_messages(limit=args.message_limit)
     except DesignSpaceError as exc:
         print(f"Session start failed: {exc}", file=sys.stderr)
         return 1
@@ -63,21 +52,33 @@ def main() -> int:
     agent = registration.get("agent", {})
     print(f"Registered {agent.get('agent_id', client.agent_id)} as status={agent.get('status', 'unknown')}")
 
-    print_results("Recent agent context", context.get("results", []), args.context_limit)
-    print_results("Client constraints", constraints.get("results", []), args.context_limit)
+    instructions = boot.get("instructions", []) or []
+    files = boot.get("files", []) or []
+    messages = boot.get("messages", []) or []
+    state = boot.get("state") or {}
 
-    messages = message_data.get("messages", [])
+    print(f"Instruction layers: {len(instructions)}")
+    if instructions:
+        levels = [item.get("skill_level", "?") for item in instructions]
+        print(f"Instruction chain: {' -> '.join(levels)}")
+    print(f"Project files: {len(files)}")
     print(f"Messages available: {len(messages)}")
+
+    if state.get("last_status_report"):
+        print(f"Saved state: {state.get('last_status_report')[:240]}")
+    elif state.get("working_on"):
+        print(f"Saved state: working on {state.get('working_on')}")
+
     if messages:
         print()
         for message in reversed(messages):
             print(format_message(message))
 
-    state = load_poll_state(client.agent_id)
-    seen_ids = state.get("seen_message_ids", [])
+    poll_state = load_poll_state(client.agent_id)
+    seen_ids = poll_state.get("seen_message_ids", [])
     seen_ids.extend(message["id"] for message in messages if message.get("id"))
-    state["seen_message_ids"] = seen_ids
-    save_poll_state(client.agent_id, state)
+    poll_state["seen_message_ids"] = seen_ids
+    save_poll_state(client.agent_id, poll_state)
     return 0
 
 

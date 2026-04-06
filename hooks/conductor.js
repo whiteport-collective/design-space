@@ -638,7 +638,7 @@ const channel = supabase
   .on('postgres_changes', {
     event: 'INSERT',
     schema: 'public',
-    table: 'design_space',
+    table: 'agent_space',
     filter: 'category=eq.agent_message',
   }, handleRealtimeMessage)
   .subscribe((status) => {
@@ -708,3 +708,4 @@ process.on('SIGINT', () => {
 
 // Keep alive
 setInterval(() => {}, 60000);
+

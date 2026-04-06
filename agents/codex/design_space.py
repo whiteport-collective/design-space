@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stdlib-only Design Space helpers for Codex workflows."""
+"""Stdlib-only Agent Space helpers for Codex workflows."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ DEFAULT_CAPABILITIES = ["code", "test", "review"]
 
 
 class DesignSpaceError(RuntimeError):
-    """Raised when the Design Space API returns an error."""
+    """Raised when the Agent Space API returns an error."""
 
 
 def script_dir() -> Path:
@@ -135,7 +135,7 @@ def format_message(message: dict[str, Any]) -> str:
 
 
 class DesignSpaceClient:
-    """Minimal Design Space HTTP client using urllib only."""
+    """Minimal Agent Space HTTP client using urllib only."""
 
     def __init__(self, *, agent_id: str | None = None) -> None:
         load_dotenv()
@@ -171,7 +171,17 @@ class DesignSpaceClient:
         except urllib.error.URLError as exc:
             raise DesignSpaceError(f"{function_name} request failed: {exc.reason}") from exc
 
-    def search(self, query: str, *, category: str | None = None, limit: int = 10, threshold: float = 0.3) -> dict[str, Any]:
+    def search(
+        self,
+        query: str,
+        *,
+        category: str | None = None,
+        limit: int = 10,
+        threshold: float = 0.3,
+        project: str | None = None,
+        designer: str | None = None,
+        include_flagged: bool = False,
+    ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "query": query,
             "limit": limit,
@@ -179,7 +189,13 @@ class DesignSpaceClient:
         }
         if category:
             payload["category"] = category
-        return self._post("search-design-space", payload)
+        if project:
+            payload["project"] = project
+        if designer:
+            payload["designer"] = designer
+        if include_flagged:
+            payload["include_flagged"] = True
+        return self._post("search-knowledge", payload)
 
     def capture(
         self,
@@ -193,7 +209,7 @@ class DesignSpaceClient:
         project: str | None = None,
     ) -> dict[str, Any]:
         return self._post(
-            "capture-design-space",
+            "capture-knowledge",
             {
                 "content": content,
                 "category": category,
@@ -205,19 +221,78 @@ class DesignSpaceClient:
             },
         )
 
-    def check_messages(self, *, include_broadcast: bool = True, limit: int = 20) -> dict[str, Any]:
-        return self._post(
-            "agent-messages",
-            {
-                "action": "check",
-                "agent_id": self.agent_id,
-                "include_broadcast": include_broadcast,
-                "limit": limit,
-            },
-        )
+    def flag_entry(
+        self,
+        *,
+        entry_id: str,
+        reason: str,
+        superseded_by: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "action": "flag",
+            "id": entry_id,
+            "reason": reason,
+        }
+        if superseded_by:
+            payload["superseded_by"] = superseded_by
+        return self._post("capture-knowledge", payload)
+
+    def check_messages(
+        self,
+        *,
+        include_broadcast: bool = True,
+        limit: int = 20,
+        project: str | None = None,
+    ) -> dict[str, Any]:
+        payload = {
+            "action": "check",
+            "agent_id": self.agent_id,
+            "include_broadcast": include_broadcast,
+            "limit": limit,
+        }
+        if project:
+            payload["project"] = project
+        return self._post("agent-messages", payload)
 
     def thread(self, thread_id: str) -> dict[str, Any]:
         return self._post("agent-messages", {"action": "thread", "thread_id": thread_id})
+
+    def session_start(
+        self,
+        *,
+        project: str | None = None,
+        model_target: str | None = None,
+        org_id: str = "whiteport",
+        client_id: str | None = None,
+        repo: str | None = None,
+        user_id: str | None = None,
+        message_limit: int = 20,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "agent_id": self.agent_id,
+            "project": project or self.config.get("project"),
+            "model_target": model_target or self.config.get("model") or DEFAULT_MODEL,
+            "org_id": org_id,
+            "client_id": client_id,
+            "repo": repo,
+            "message_limit": message_limit,
+        }
+        if user_id:
+            payload["user_id"] = user_id
+        return self._post("session-start", payload)
+
+    def put_files(self, *, project: str, files: list[dict[str, Any]], org_id: str = "whiteport", repo: str | None = None) -> dict[str, Any]:
+        return self._post(
+            "repo-files",
+            {
+                "action": "put-batch",
+                "org_id": org_id,
+                "project": project,
+                "repo": repo,
+                "files": files,
+            },
+            timeout=30,
+        )
 
     def who_online(self, *, project: str | None = None, capability: str | None = None) -> dict[str, Any]:
         payload: dict[str, Any] = {"action": "who-online"}
@@ -236,6 +311,8 @@ class DesignSpaceClient:
         status: str = "online",
         working_on: str | None = None,
         workspace: str | None = None,
+        project: str | None = None,
+        repo: str | None = None,
     ) -> dict[str, Any]:
         payload = {
             "action": "register",
@@ -244,7 +321,8 @@ class DesignSpaceClient:
             "model": self.config.get("model"),
             "platform": self.config.get("platform"),
             "framework": self.config.get("framework"),
-            "project": self.config.get("project"),
+            "project": project if project is not None else self.config.get("project"),
+            "repo": repo,
             "working_on": working_on if working_on is not None else self.config.get("working_on"),
             "workspace": workspace if workspace is not None else self.config.get("workspace"),
             "capabilities": self.config.get("capabilities") or list(DEFAULT_CAPABILITIES),

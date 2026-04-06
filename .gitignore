@@ -6,4 +6,9 @@ node_modules/
 mcp-server/.env
 hooks/sessions.json
 hooks/poll-state.json
+.claude/agents/*.state.md
 **/__pycache__/
+
+# Windows OS artifacts
+Microsoft/
+session-wrap.md
