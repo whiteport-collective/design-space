@@ -210,6 +210,90 @@ serve(async (req) => {
       return jsonResponse({ success: true, id });
     }
 
+    // --- Skill registry actions (agent_skills table) ---
+
+    if (action === "upsert-skill") {
+      const {
+        agent_id,
+        skill_slug,
+        skill_name,
+        skill_level,
+        org_id = null,
+        client_id = null,
+        project = null,
+        repo = null,
+        content = null,
+        description = null,
+        source = "repo",
+        status = "active",
+      } = body;
+
+      if (!agent_id || !skill_slug || !skill_name || !skill_level) {
+        return jsonResponse(
+          { error: "agent_id, skill_slug, skill_name, skill_level required" },
+          400,
+        );
+      }
+
+      // Find existing by unique composite
+      const { data: existing } = await db
+        .from("agent_skills")
+        .select("id")
+        .eq("skill_slug", skill_slug)
+        .eq("skill_level", skill_level)
+        .eq("agent_id", agent_id)
+        .maybeSingle();
+
+      const row = {
+        agent_id,
+        skill_slug,
+        skill_name,
+        skill_level,
+        org_id,
+        project,
+        repo,
+        description,
+      };
+
+      if (existing?.id) {
+        const { error } = await db
+          .from("agent_skills")
+          .update({ ...row, updated_at: new Date().toISOString() })
+          .eq("id", existing.id);
+        if (error) throw error;
+        return jsonResponse({ success: true, id: existing.id, action: "updated" });
+      }
+
+      const { data: inserted, error } = await db
+        .from("agent_skills")
+        .insert(row)
+        .select("id")
+        .single();
+      if (error) throw error;
+      return jsonResponse({ success: true, id: inserted.id, action: "inserted" });
+    }
+
+    if (action === "list-skills") {
+      const {
+        agent_id = null,
+        org_id = null,
+        skill_level = null,
+        include_disabled = false,
+        statuses = null,
+      } = body;
+
+      let query = db.from("agent_skills").select("*");
+
+      if (agent_id) query = query.eq("agent_id", agent_id);
+      if (org_id) query = query.eq("org_id", org_id);
+      if (skill_level) query = query.eq("skill_level", skill_level);
+
+      const { data, error } = await query.order("skill_level").order("skill_slug");
+      if (error) throw error;
+
+      return jsonResponse({ skills: data ?? [] });
+    }
+
     return jsonResponse({ error: `unknown action: ${action}` }, 400);
   } catch (err) {
     return jsonResponse({ error: err.message }, 500);
