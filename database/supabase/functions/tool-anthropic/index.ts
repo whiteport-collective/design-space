@@ -158,27 +158,77 @@ async function getGoogleAccessToken(): Promise<string> {
 
 // ------- Format translation -------
 
+type AnthropicContentBlock = {
+  type: string;
+  text?: string;
+  id?: string;
+  name?: string;
+  input?: unknown;
+  tool_use_id?: string;
+  content?: string | Array<{ type: string; text: string }>;
+};
+
 type AnthropicMessage = {
   role: string;
-  content: string | Array<{ type: string; text: string }>;
+  content: string | AnthropicContentBlock[];
 };
 
 function anthropicToGemini(body: Record<string, unknown>) {
   const messages = (body.messages as AnthropicMessage[]) ?? [];
 
-  const contents = messages.map((msg) => ({
-    role: msg.role === "assistant" ? "model" : "user",
-    parts: [
-      {
-        text:
-          typeof msg.content === "string"
-            ? msg.content
-            : (msg.content as Array<{ type: string; text: string }>).find(
-                  (p) => p.type === "text",
-                )?.text ?? "",
-      },
-    ],
-  }));
+  // Build tool_use_id → function name map for translating tool_result blocks
+  const toolUseIdToName: Record<string, string> = {};
+  for (const msg of messages) {
+    if (msg.role === "assistant" && Array.isArray(msg.content)) {
+      for (const block of msg.content as AnthropicContentBlock[]) {
+        if (block.type === "tool_use" && block.id && block.name) {
+          toolUseIdToName[block.id] = block.name;
+        }
+      }
+    }
+  }
+
+  const contents = messages.map((msg) => {
+    if (typeof msg.content === "string") {
+      return {
+        role: msg.role === "assistant" ? "model" : "user",
+        parts: [{ text: msg.content }],
+      };
+    }
+
+    const blocks = msg.content as AnthropicContentBlock[];
+
+    if (msg.role === "assistant") {
+      const parts = blocks.flatMap((block) => {
+        if (block.type === "text") return [{ text: block.text ?? "" }];
+        if (block.type === "tool_use") {
+          return [{ functionCall: { name: block.name!, args: block.input ?? {} } }];
+        }
+        return [];
+      });
+      return { role: "model", parts: parts.length ? parts : [{ text: "" }] };
+    } else {
+      // user role — may contain tool_result blocks
+      const parts = blocks.flatMap((block) => {
+        if (block.type === "text") return [{ text: block.text ?? "" }];
+        if (block.type === "tool_result") {
+          const funcName = toolUseIdToName[block.tool_use_id ?? ""] ?? "unknown";
+          let responseContent: unknown;
+          try {
+            responseContent =
+              typeof block.content === "string"
+                ? JSON.parse(block.content)
+                : block.content ?? {};
+          } catch {
+            responseContent = { result: block.content };
+          }
+          return [{ functionResponse: { name: funcName, response: responseContent } }];
+        }
+        return [];
+      });
+      return { role: "user", parts: parts.length ? parts : [{ text: "" }] };
+    }
+  });
 
   const requestedTokens = (body.max_tokens as number) ?? 1024;
 
@@ -193,6 +243,22 @@ function anthropicToGemini(body: Record<string, unknown>) {
   };
 
   const result: Record<string, unknown> = { contents, generationConfig };
+
+  // Translate Anthropic tools → Gemini functionDeclarations
+  const anthropicTools = body.tools as
+    | Array<{ name: string; description?: string; input_schema?: unknown }>
+    | undefined;
+  if (anthropicTools?.length) {
+    result.tools = [
+      {
+        functionDeclarations: anthropicTools.map((t) => ({
+          name: t.name,
+          description: t.description ?? "",
+          parameters: t.input_schema ?? { type: "object", properties: {} },
+        })),
+      },
+    ];
+  }
 
   if (body.system) {
     result.systemInstruction = {
@@ -356,28 +422,40 @@ function geminiToAnthropic(
     (geminiResponse.candidates as Array<Record<string, unknown>>) ?? [];
   const candidate = candidates[0];
 
-  const text =
-    (
-      (
-        (candidate?.content as Record<string, unknown>)?.parts as Array<{
-          text?: string;
-        }>
-      ) ?? []
-    )
-      .map((p) => p.text ?? "")
-      .join("") ?? "";
+  const parts =
+    ((candidate?.content as Record<string, unknown>)?.parts as Array<{
+      text?: string;
+      thought?: boolean;
+      functionCall?: { name: string; args: unknown };
+    }>) ?? [];
 
-  const usage = geminiResponse.usageMetadata as
-    | Record<string, number>
-    | undefined;
+  const content: unknown[] = [];
+
+  const textParts = parts.filter((p) => !p.thought && typeof p.text === "string" && p.text.length > 0);
+  if (textParts.length > 0) {
+    content.push({ type: "text", text: textParts.map((p) => p.text).join("") });
+  }
+
+  const funcParts = parts.filter((p) => p.functionCall != null);
+  funcParts.forEach((p, i) => {
+    content.push({
+      type: "tool_use",
+      id: `tu_g_${Date.now()}_${i}`,
+      name: p.functionCall!.name,
+      input: p.functionCall!.args ?? {},
+    });
+  });
+
+  const stopReason = funcParts.length > 0 ? "tool_use" : "end_turn";
+  const usage = geminiResponse.usageMetadata as Record<string, number> | undefined;
 
   return {
     id: "msg_google",
     type: "message",
     role: "assistant",
-    content: [{ type: "text", text }],
+    content: content.length ? content : [{ type: "text", text: "" }],
     model: originalModel,
-    stop_reason: "end_turn",
+    stop_reason: stopReason,
     usage: {
       input_tokens: usage?.promptTokenCount ?? 0,
       output_tokens: usage?.candidatesTokenCount ?? 0,
