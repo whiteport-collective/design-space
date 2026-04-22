@@ -1,0 +1,25 @@
+name: Weekly Security Audit
+
+on:
+  schedule:
+    # Every Monday 06:00 UTC (08:00 Stockholm in summer, 07:00 in winter)
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run Supabase security + performance advisors
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_REF: uztngidbpduyodrabokm
+          DESIGN_SPACE_URL: https://uztngidbpduyodrabokm.supabase.co
+          DESIGN_SPACE_ANON_KEY: ${{ secrets.DESIGN_SPACE_ANON_KEY }}
+        run: node tools/security-audit.mjs

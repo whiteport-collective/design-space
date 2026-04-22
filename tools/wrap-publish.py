@@ -17,8 +17,11 @@ Usage:
 import argparse, json, os, pathlib, re, sys, urllib.request, urllib.error
 from datetime import datetime
 
-TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV6dG5naWRicGR1eW9kcmFib2ttIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI1MTc3ODksImV4cCI6MjA4ODA5Mzc4OX0.FNnTd5p9Qj3WeD0DxQORmNf2jgaVSZ6FU1EGy0W7MRo"
-BASE_URL = "https://uztngidbpduyodrabokm.supabase.co/functions/v1"
+TOKEN = os.environ.get("DESIGN_SPACE_ANON_KEY")
+BASE_URL = os.environ.get("DESIGN_SPACE_URL", "https://uztngidbpduyodrabokm.supabase.co") + "/functions/v1"
+
+if not TOKEN:
+    sys.exit("ERROR: DESIGN_SPACE_ANON_KEY env var is required")
 
 
 def post(endpoint: str, payload: dict, timeout: int = 30) -> dict:
@@ -32,6 +35,94 @@ def post(endpoint: str, payload: dict, timeout: int = 30) -> dict:
             return json.loads(r.read())
     except urllib.error.HTTPError as e:
         raise RuntimeError(f"{endpoint} HTTP {e.code}: {e.read().decode()}") from e
+
+
+def chunk_file(path: str, content: str) -> list[dict]:
+    """Split a markdown file into per-section chunks for semantic indexing."""
+    chunks = []
+    current_title = None
+    current_lines = []
+
+    def flush():
+        if current_title is None:
+            return
+        body = "\n".join(current_lines).strip()
+        if len(body) < 80:
+            return
+        text = f"{current_title}\n\n{body}"
+        chunks.append({"title": current_title, "text": text[:3000]})
+
+    for line in content.splitlines():
+        m = re.match(r'^#{1,3}\s+(.+)', line)
+        if m:
+            flush()
+            current_title = m.group(1).strip()
+            current_lines = []
+        elif current_title is not None:
+            current_lines.append(line)
+
+    flush()
+    return chunks
+
+
+def delete_chunks_for_file(repo: str, source_file: str):
+    """Delete existing chunks for a specific file."""
+    import urllib.parse
+    SUPABASE_URL = "https://uztngidbpduyodrabokm.supabase.co"
+    params = f"category=eq.design_process&project=eq.{repo}&source=eq.wrap-index&source_file=eq.{urllib.parse.quote(source_file)}"
+    req = urllib.request.Request(
+        f"{SUPABASE_URL}/rest/v1/agent_space?{params}",
+        headers={"Authorization": f"Bearer {TOKEN}", "apikey": TOKEN},
+        method="DELETE",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return r.status
+    except Exception:
+        return None
+
+
+def index_design_process(dp: pathlib.Path, repo: str):
+    """Re-index only design-process .md files changed since last wrap."""
+    import time
+    stamp_file = dp / "_progress" / ".wrap-index-time"
+    last_indexed = stamp_file.stat().st_mtime if stamp_file.exists() else 0.0
+
+    files = sorted(f for f in dp.rglob("*.md") if f.is_file())
+    changed = [f for f in files if f.stat().st_mtime > last_indexed]
+
+    if not changed:
+        print("Design process indexed: 0 chunks (nothing changed)")
+        return
+
+    sent = 0
+    errors = 0
+    for f in changed:
+        try:
+            content = f.read_text(encoding="utf-8")
+            rel = f.relative_to(dp.parent).as_posix()
+            delete_chunks_for_file(repo, rel)
+            chunks = chunk_file(rel, content)
+            for chunk in chunks:
+                post("capture-knowledge", {
+                    "content": chunk["text"],
+                    "category": "design_process",
+                    "project": repo,
+                    "topics": ["design-process", repo],
+                    "source": "wrap-index",
+                    "source_file": rel,
+                    "metadata": {"title": chunk["title"], "file": rel},
+                }, timeout=15)
+                sent += 1
+        except Exception:
+            errors += 1
+
+    stamp_file.write_text(str(time.time()))
+
+    status = f"{sent} chunks indexed ({len(changed)} files changed)"
+    if errors:
+        status += f" ({errors} errors)"
+    print(f"Design process indexed: {status}")
 
 
 def parse_sections(text: str) -> dict[str, str]:
@@ -67,6 +158,7 @@ def main():
     parser.add_argument("--agent", required=True, help="Agent session id (e.g. freya-2567)")
     parser.add_argument("--user", default=os.environ.get("GIT_AUTHOR_NAME", os.environ.get("USERNAME", "unknown")))
     parser.add_argument("--root", type=pathlib.Path, default=None, help="Repo root. Auto-detected if omitted.")
+    parser.add_argument("--no-index", action="store_true", help="Skip semantic indexing of design-process/")
     args = parser.parse_args()
 
     input_file = pathlib.Path(args.input)
@@ -134,18 +226,20 @@ def main():
             print("Learned content saved to knowledge base.")
         except RuntimeError as e:
             print(f"Warning: knowledge capture skipped — {e}", file=sys.stderr)
+            print("  Fix: set OPENROUTER_API_KEY in Supabase secrets for project uztngidbpduyodrabokm.", file=sys.stderr)
 
     # 4. Sync design-process files
     dp = root / "design-process"
-    if not dp.exists():
-        print("No design-process/ — skipping file sync.")
-    else:
-        files = []
+    files = []
+    if dp.exists():
         for f in sorted(dp.rglob("*")):
             if f.suffix in (".md", ".yaml", ".yml") and f.is_file():
                 rel = f.relative_to(root).as_posix()
                 files.append({"path": rel, "content": f.read_text(encoding="utf-8")})
 
+    if not files:
+        print("No design-process/ — skipping file sync.")
+    else:
         synced = 0
         for i in range(0, len(files), 50):
             batch = files[i:i+50]
@@ -171,6 +265,15 @@ def main():
             log_file.write_text(f"# Design Log\n{log_entry}", encoding="utf-8")
 
         print(f"Wrapped. {synced} files synced.")
+
+    # 6. Index design-process semantically
+    if dp.exists() and not args.no_index:
+        try:
+            index_design_process(dp, args.repo)
+        except Exception as e:
+            print(f"Warning: semantic indexing skipped — {e}", file=sys.stderr)
+    elif args.no_index:
+        print("Semantic indexing skipped (--no-index).")
 
 
 if __name__ == "__main__":
