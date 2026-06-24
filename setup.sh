@@ -46,7 +46,11 @@ echo "3/3 Deploying edge functions..."
 for func_dir in database/supabase/functions/*/; do
   func_name=$(basename "$func_dir")
   echo "  Deploying: $func_name"
-  supabase functions deploy "$func_name" --project-ref "$PROJECT_REF"
+  if [[ "$func_name" == webhook-* ]]; then
+    supabase functions deploy "$func_name" --project-ref "$PROJECT_REF" --no-verify-jwt
+  else
+    supabase functions deploy "$func_name" --project-ref "$PROJECT_REF"
+  fi
 done
 
 echo ""
@@ -59,6 +63,8 @@ echo "Next steps:"
 echo "  1. Set Edge Function secrets in the Supabase dashboard:"
 echo "     - OPENROUTER_API_KEY (for semantic embeddings)"
 echo "     - VOYAGE_API_KEY (for visual embeddings, optional)"
+echo "     - AGENT_MESSAGES_WEBHOOK_SECRET (optional, for webhook-agent-messages)"
+echo "     - FIREFLIES_API_KEY / FIREFLIES_WEBHOOK_SECRET (optional, for Fireflies intake)"
 echo ""
 echo "  2. Get your anon key from:"
 echo "     https://supabase.com/dashboard/project/$PROJECT_REF/settings/api"
