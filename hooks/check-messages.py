@@ -40,7 +40,13 @@ if not SUPABASE_KEY:
             }
         }))
     sys.exit(0)
-WRAP_WARNING_THRESHOLD = 40
+# Tool calls before the wrap reminder. 40 was set for ~200k-token models;
+# Opus 5.5 has far more context, so wait much longer.
+# Override with DESIGN_SPACE_WRAP_THRESHOLD.
+try:
+    WRAP_WARNING_THRESHOLD = int(os.environ.get("DESIGN_SPACE_WRAP_THRESHOLD", "300"))
+except ValueError:
+    WRAP_WARNING_THRESHOLD = 300
 
 # This hook runs after EVERY tool call. Before 2026-09-21 that meant one full
 # inbox download per tool call — the single largest source of the 15,25 GB
