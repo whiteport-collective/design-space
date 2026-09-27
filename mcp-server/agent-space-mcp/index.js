@@ -274,10 +274,31 @@ server.registerTool(
     description: "Get unread Agent Space messages.",
   },
   async () => {
-    const { data, error } = await supabase
+    // Two passes on purpose. This tool shows ten messages, but scoring needs a
+    // wider pool to pick them from. Fetching that pool WITH content meant
+    // downloading a hundred full messages to display ten -- the same
+    // download-then-discard pattern that caused the 2026-09-18 egress incident.
+    //
+    // Pass 1 fetches only what scoring reads: no content, so it is cheap.
+    // Pass 2 fetches content for the ten that survive.
+    const baseAgentId = getBaseAgentId(AGENT_ID);
+    const readIds = baseAgentId ? [AGENT_ID, baseAgentId] : [AGENT_ID];
+
+    let poolQuery = supabase
       .from("agent_space")
-      .select("id, content, category, project, thread_id, metadata, created_at")
-      .eq("category", "agent_message")
+      .select("id, category, project, thread_id, metadata, created_at")
+      .eq("category", "agent_message");
+
+    // Exclude already-read in the query rather than after the download.
+    // `metadata->read_by` is absent on some older rows and NOT (NULL @> ...)
+    // is NULL, not TRUE, so the is.null branch keeps those rows visible.
+    for (const id of readIds) {
+      poolQuery = poolQuery.or(
+        `metadata->read_by.is.null,metadata->read_by.not.cs.${JSON.stringify([id])}`,
+      );
+    }
+
+    const { data: pool, error } = await poolQuery
       .order("created_at", { ascending: false })
       .limit(100);
 
@@ -285,7 +306,7 @@ server.registerTool(
       throw error;
     }
 
-    const messages = (data || [])
+    const ranked = (pool || [])
       .map((message) => computeSignal(message))
       .filter(Boolean)
       .sort((a, b) => {
@@ -296,8 +317,26 @@ server.registerTool(
 
         return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
       })
-      .slice(0, 10)
-      .map(({ signal_weight, ...message }) => message);
+      .slice(0, 10);
+
+    let contentById = new Map();
+    if (ranked.length > 0) {
+      const { data: bodies, error: bodyError } = await supabase
+        .from("agent_space")
+        .select("id, content")
+        .in("id", ranked.map((m) => m.id));
+
+      if (bodyError) {
+        throw bodyError;
+      }
+
+      contentById = new Map((bodies || []).map((row) => [row.id, row.content]));
+    }
+
+    const messages = ranked.map(({ signal_weight, ...message }) => ({
+      ...message,
+      content: contentById.get(message.id) ?? "",
+    }));
 
     return asTextResult(JSON.stringify(messages, null, 2), { messages });
   },

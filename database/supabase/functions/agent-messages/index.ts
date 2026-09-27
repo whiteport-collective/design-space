@@ -10,6 +10,14 @@
 
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import {
+  MESSAGE_COLUMNS,
+  MESSAGE_LIST_COLUMNS,
+  PREVIEW_CHARS,
+  PREVIEW_DIRECT_LIMIT,
+  previewMessage,
+  excludeRead,
+} from "../_shared/columns.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -104,7 +112,7 @@ serve(async (req) => {
           thread_id,
           metadata,
         })
-        .select()
+        .select(MESSAGE_COLUMNS)
         .single();
 
       if (error) throw error;
@@ -121,36 +129,80 @@ serve(async (req) => {
     // available = broadcast, no specific match
     // User scoping: messages with a different user_id are hidden by default
     if (action === "check") {
-      const { agent_id, project, repo, user_id, include_others = false, limit = 50 } = body;
+      const {
+        agent_id, project, repo, user_id, include_others = false,
+        limit = 50,
+        // Phase 1 used to be unbounded. It is now capped and paginated so a
+        // long inbox cannot pull the whole history on every poll, while still
+        // never silently dropping a direct message — see has_more_direct.
+        direct_limit = null,
+        direct_offset = 0,
+        // Incremental fetch: only messages created after this ISO timestamp.
+        since = null,
+        // List view: truncate content and let the caller fetch full text on open.
+        preview = false,
+        preview_chars = PREVIEW_CHARS,
+      } = body;
 
       if (!agent_id) {
         return jsonResponse({ error: "agent_id is required" }, 400);
       }
 
-      // Derive base agent name if session-scoped (e.g. "freya-2567" → "freya")
+      // Derive base agent name if session-scoped (e.g. "freya-2567" -> "freya")
       const sessionMatch = agent_id.match(/^(.+)-(\d{4})$/);
       const baseAgentId = sessionMatch ? sessionMatch[1] : null;
       const directIds = baseAgentId ? [agent_id, baseAgentId] : [agent_id];
 
-      // Phase 1: Direct messages to this agent (no limit — never miss a direct message)
-      const { data: directMessages, error: directError } = await supabase
-        .from("agent_space")
-        .select("*")
-        .eq("category", "agent_message")
-        .in("metadata->>to_agent", directIds)
-        .order("created_at", { ascending: false });
+      // A preview listing is a headline view, so it defaults to fewer rows than
+      // a full-content fetch. Either way the cap is paginated, never silent.
+      const defaultDirectCap = preview ? PREVIEW_DIRECT_LIMIT : 200;
+      // Take the cursor BEFORE issuing any query, not after.
+      // A message inserted while these queries run has created_at earlier than
+      // a timestamp taken afterwards, but is not in their result. The caller
+      // would then ask for `created_at > checked_at` next time and never see
+      // it — a direct message lost silently, which is the one thing this
+      // endpoint must not do. Taking it first can only re-deliver a message,
+      // never drop one, and the caller already de-duplicates.
+      const checkedAt = new Date().toISOString();
 
+      const directCap = Math.min(Number(direct_limit) || defaultDirectCap, 500);
+      const otherCap = Math.min(Number(limit) || 50, 200);
+      const columns = MESSAGE_LIST_COLUMNS;
+
+      // Phase 1: direct messages to this agent.
+      // Bounded, read-filtered in SQL, and ordered oldest-relevant-first by
+      // recency. The cap is generous and paginated rather than a silent cut:
+      // has_more_direct tells the caller to come back with direct_offset.
+      let directQuery = supabase
+        .from("agent_space")
+        .select(columns)
+        .eq("category", "agent_message")
+        .in("metadata->>to_agent", directIds);
+      directQuery = excludeRead(directQuery, directIds);
+      if (since) directQuery = directQuery.gt("created_at", since);
+      directQuery = directQuery
+        .order("created_at", { ascending: false })
+        .range(direct_offset, direct_offset + directCap); // +1 row probes for more
+
+      const { data: directRaw, error: directError } = await directQuery;
       if (directError) throw directError;
 
-      // Phase 2: All other recent messages (broadcasts + messages to others)
-      const { data: otherMessages, error: otherError } = await supabase
-        .from("agent_space")
-        .select("*")
-        .eq("category", "agent_message")
-        .not("metadata->>to_agent", "in", `(${directIds.map(id => `"${id}"`).join(",")})`)
-        .order("created_at", { ascending: false })
-        .limit(limit);
+      const hasMoreDirect = (directRaw || []).length > directCap;
+      const directMessages = (directRaw || []).slice(0, directCap);
 
+      // Phase 2: broadcasts and messages addressed to others.
+      let otherQuery = supabase
+        .from("agent_space")
+        .select(columns)
+        .eq("category", "agent_message")
+        .not("metadata->>to_agent", "in", `(${directIds.map((id) => `"${id}"`).join(",")})`);
+      otherQuery = excludeRead(otherQuery, directIds);
+      if (since) otherQuery = otherQuery.gt("created_at", since);
+      otherQuery = otherQuery
+        .order("created_at", { ascending: false })
+        .limit(otherCap);
+
+      const { data: otherMessages, error: otherError } = await otherQuery;
       if (otherError) throw otherError;
 
       // Merge and deduplicate
@@ -161,13 +213,10 @@ serve(async (req) => {
         return true;
       });
 
-      // Filter: already-read, own messages, and other users' messages
+      // Remaining filters that SQL does not already cover.
+      // (read_by is handled by excludeRead above.)
       const filtered = allMessages.filter((m: any) => {
-        const readBy = m.metadata?.read_by || [];
-        if (readBy.includes(agent_id)) return false;
-        if (baseAgentId && readBy.includes(baseAgentId)) return false;
-
-        // Filter own messages — except handoffs (from yourself to your next session)
+        // Filter own messages - except handoffs (from yourself to your next session)
         const fromAgent = m.metadata?.from_agent;
         const msgType = m.metadata?.message_type;
         if (msgType !== "handoff") {
@@ -199,7 +248,7 @@ serve(async (req) => {
         const userMatch = user_id && msgUserId === user_id;
 
         let signal: string;
-        // urgent: handoff matching all 3 nodes — this is "your session is waiting"
+        // urgent: handoff matching all 3 nodes - this is "your session is waiting"
         if (msgType === "handoff" && agentMatch && projectMatch && userMatch) {
           signal = "urgent";
         } else if (agentMatch && projectMatch) {
@@ -223,9 +272,20 @@ serve(async (req) => {
         return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
       });
 
+      const payload = preview
+        ? scored.map((m: any) => previewMessage(m, preview_chars))
+        : scored;
+
       return jsonResponse({
-        messages: scored,
+        messages: payload,
         unread_count: scored.length,
+        // Pagination signal for Phase 1. If true, the caller has NOT seen every
+        // direct message yet and must re-check with direct_offset advanced.
+        has_more_direct: hasMoreDirect,
+        next_direct_offset: hasMoreDirect ? direct_offset + directCap : null,
+        preview,
+        // Caller stores this and passes it back as `since` to fetch only what is new.
+        checked_at: checkedAt,
       });
     }
 
@@ -290,7 +350,7 @@ serve(async (req) => {
             read_by: [],
           },
         })
-        .select()
+        .select(MESSAGE_COLUMNS)
         .single();
 
       if (error) throw error;
@@ -335,7 +395,7 @@ serve(async (req) => {
         .from("agent_space")
         .update({ metadata: updates })
         .eq("id", message_id)
-        .select()
+        .select(MESSAGE_COLUMNS)
         .single();
 
       if (error) throw error;
@@ -370,7 +430,6 @@ serve(async (req) => {
           model,
           platform,
           framework,
-          project,
           repo,
           working_on,
           workspace,
@@ -382,7 +441,7 @@ serve(async (req) => {
           session_id: crypto.randomUUID(),
           session_start: new Date().toISOString(),
           last_heartbeat: new Date().toISOString(),
-          metadata: { base_agent_id: baseAgentId, session_code: code },
+          metadata: { base_agent_id: baseAgentId, session_code: code, ...(project ? { project } : {}) },
         }, { onConflict: "agent_id" })
         .select()
         .single();
@@ -401,7 +460,7 @@ serve(async (req) => {
       let instructions = null;
       const { data: protocol } = await supabase
         .from("agent_space")
-        .select("*")
+        .select(MESSAGE_COLUMNS)
         .eq("category", "protocol")
         .order("created_at", { ascending: false })
         .limit(1)
@@ -523,18 +582,27 @@ serve(async (req) => {
         return jsonResponse({ error: "thread_id is required" }, 400);
       }
 
-      const { data: messages, error } = await supabase
+      // Bounded like every other read on this table. Threads are normally
+      // short, but "normally" is not a guarantee, and an unbounded select is
+      // how this endpoint got expensive the last time.
+      const threadCap = Math.min(Number(body.limit) || 200, 500);
+      const { data: threadRows, error } = await supabase
         .from("agent_space")
-        .select("*")
+        .select(MESSAGE_COLUMNS)
         .eq("thread_id", thread_id)
-        .order("created_at", { ascending: true });
+        .order("created_at", { ascending: true })
+        .limit(threadCap + 1);
 
       if (error) throw error;
 
+      const hasMore = (threadRows || []).length > threadCap;
+      const messages = (threadRows || []).slice(0, threadCap);
+
       return jsonResponse({
         thread_id,
-        messages: messages || [],
-        count: (messages || []).length,
+        messages,
+        count: messages.length,
+        has_more: hasMore,
       });
     }
 
@@ -544,7 +612,7 @@ serve(async (req) => {
 
       const { data: protocol, error } = await supabase
         .from("agent_space")
-        .select("*")
+        .select(MESSAGE_COLUMNS)
         .eq("category", "protocol")
         .order("created_at", { ascending: false })
         .limit(1)
@@ -591,7 +659,7 @@ serve(async (req) => {
             read_by: [],
           },
         })
-        .select()
+        .select(MESSAGE_COLUMNS)
         .single();
 
       if (error) throw error;
@@ -662,7 +730,7 @@ serve(async (req) => {
             read_by: [],
           },
         })
-        .select()
+        .select(MESSAGE_COLUMNS)
         .single();
 
       if (error) throw error;
@@ -675,7 +743,7 @@ serve(async (req) => {
       const { data: existing } = await supabase.from("agent_space").select("metadata").eq("id", task_id).single();
       if (!existing) return jsonResponse({ error: "Not found" }, 404);
       const updates = { ...existing.metadata, status: "in-progress", claimed_by: agent_id, claimed_at: new Date().toISOString() };
-      const { data: message, error } = await supabase.from("agent_space").update({ metadata: updates }).eq("id", task_id).select().single();
+      const { data: message, error } = await supabase.from("agent_space").update({ metadata: updates }).eq("id", task_id).select(MESSAGE_COLUMNS).single();
       if (error) throw error;
       return jsonResponse({ message, task: message });
     }
@@ -683,7 +751,7 @@ serve(async (req) => {
     if (action === "list-tasks") {
       // Redirect to check filtered by message_type
       const { project, assignee, status, limit = 20 } = body;
-      let query = supabase.from("agent_space").select("*").eq("category", "agent_message").eq("metadata->>message_type", "work-order").order("created_at", { ascending: false }).limit(limit);
+      let query = supabase.from("agent_space").select(MESSAGE_COLUMNS).eq("category", "agent_message").eq("metadata->>message_type", "work-order").order("created_at", { ascending: false }).limit(limit);
       if (project) query = query.eq("project", project);
       if (status) query = query.eq("metadata->>status", status);
       if (assignee) query = query.eq("metadata->>to_agent", assignee);
@@ -700,7 +768,7 @@ serve(async (req) => {
       const updates: any = { ...existing.metadata };
       if (newStatus) { updates.status = newStatus; if (newStatus === "done") updates.completed_at = new Date().toISOString(); }
       if (result) updates.result = result;
-      const { data: message, error } = await supabase.from("agent_space").update({ metadata: updates }).eq("id", task_id).select().single();
+      const { data: message, error } = await supabase.from("agent_space").update({ metadata: updates }).eq("id", task_id).select(MESSAGE_COLUMNS).single();
       if (error) throw error;
       return jsonResponse({ message, task: message });
     }
@@ -756,7 +824,7 @@ serve(async (req) => {
             read_by: [],
           },
         })
-        .select()
+        .select(MESSAGE_COLUMNS)
         .single();
 
       if (handoffError) throw handoffError;
@@ -773,13 +841,13 @@ serve(async (req) => {
 
       let query = supabase
         .from("agent_presence")
-        .select("agent_id, agent_name, project, repo, status, working_on, last_status_report, last_heartbeat")
+        .select("agent_id, agent_name, repo, status, working_on, last_status_report, last_heartbeat, metadata")
         .eq("agent_name", agent_name)
         .order("last_heartbeat", { ascending: false })
         .limit(1);
 
       if (repo) query = query.eq("repo", repo);
-      if (project) query = query.eq("project", project);
+      // project is stored in metadata, not a column — filter by repo instead
 
       const { data, error } = await query.single();
 

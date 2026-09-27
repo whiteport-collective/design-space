@@ -310,6 +310,25 @@ serve(async (req) => {
       const signature = req.headers.get("x-hub-signature");
       const valid = await verifySignature(bodyText, signature, webhookSecret);
       if (!valid) {
+        // Diagnostic: log what we received vs expected
+        const key = await crypto.subtle.importKey(
+          "raw",
+          new TextEncoder().encode(webhookSecret),
+          { name: "HMAC", hash: "SHA-256" },
+          false,
+          ["sign"],
+        );
+        const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(bodyText));
+        const expected = Array.from(new Uint8Array(sig))
+          .map(b => b.toString(16).padStart(2, "0"))
+          .join("");
+        console.error("webhook-fireflies 401 diagnostic:", JSON.stringify({
+          received_header: signature,
+          expected_hmac: expected,
+          header_present: signature !== null,
+          body_length: bodyText.length,
+          all_headers: Object.fromEntries(req.headers.entries()),
+        }));
         return jsonResponse({ error: "Invalid webhook signature" }, 401);
       }
     }
@@ -317,7 +336,7 @@ serve(async (req) => {
     const payload = JSON.parse(bodyText);
     const { meetingId, eventType } = payload;
 
-    if (eventType !== "Transcription completed") {
+    if (eventType !== "transcription-completed") {
       return jsonResponse({ skipped: true, reason: `Unhandled event: ${eventType}` });
     }
 

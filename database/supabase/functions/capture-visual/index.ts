@@ -4,6 +4,7 @@
 
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { ENTRY_COLUMNS } from "../_shared/columns.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -98,7 +99,7 @@ serve(async (req) => {
         embedding,
         visual_embedding,
       })
-      .select()
+      .select(ENTRY_COLUMNS) // never echo back the vectors we just wrote: ~32 kB (embedding 1536d + visual_embedding 1024d)
       .single();
 
     if (error) throw error;

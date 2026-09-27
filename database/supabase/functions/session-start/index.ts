@@ -29,6 +29,7 @@
 
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { MESSAGE_COLUMNS, excludeRead } from "../_shared/columns.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -108,9 +109,15 @@ serve(async (req) => {
       client_id = null,
       repo = null,
       user_id = null,
+      user_email = null,
       pronouns = null,
       register = true,
       message_limit = 50,
+      // Cap on unread direct messages returned at boot. Generous, but bounded —
+      // an agent with a long inbox must not re-download it on every session start.
+      direct_limit = 200,
+      // Cap on project files returned at boot; see query 2.
+      file_limit = 200,
       resume_token = null,
     } = body;
 
@@ -148,6 +155,7 @@ serve(async (req) => {
       onlineResult,
       pluginCatalogResult,
       installationsResult,
+      userProfileResult,
     ] = await Promise.all([
 
       // 1. Compiled instructions (hierarchical resolution)
@@ -176,7 +184,14 @@ serve(async (req) => {
               .select("path, content, content_type, updated_at, repo")
               .eq("org_id", org_id)
               .eq("project", project)
-              .order("path");
+              .order("path")
+              // Bounded on purpose. repo_files.content is arbitrary file text,
+              // and this runs on every session start. Unbounded, a project with
+              // a few hundred design documents would ship megabytes per boot —
+              // the same shape as the 2026-09-18 incident, just a different
+              // table. It is empty today; the cap is here so filling it stays
+              // cheap. One row beyond the cap is fetched to detect truncation.
+              .limit(file_limit + 1);
             if (repo) q = q.eq("repo", repo);
             return q;
           })()
@@ -227,20 +242,32 @@ serve(async (req) => {
         .limit(1)
         .maybeSingle(),
 
-      // 5. Direct messages — no limit (never miss a direct)
-      db
-        .from("agent_space")
-        .select("*")
-        .eq("category", "agent_message")
-        .in("metadata->>to_agent", directIds)
-        .order("created_at", { ascending: false }),
+      // 5. Direct messages — bounded, read-filtered, never vectors.
+      // Previously unbounded with select("*"), which meant every boot pulled
+      // the agent's whole history including embedding vector(1536) per row.
+      // The cap must not be a silent cut: we fetch one row beyond it purely to
+      // detect truncation, then report has_more_direct so a boot that left
+      // direct messages behind says so instead of looking complete.
+      excludeRead(
+        db
+          .from("agent_space")
+          .select(MESSAGE_COLUMNS)
+          .eq("category", "agent_message")
+          .in("metadata->>to_agent", directIds),
+        directIds,
+      )
+        .order("created_at", { ascending: false })
+        .limit(direct_limit + 1),
 
       // 6. Broadcast / other messages — limited
-      db
-        .from("agent_space")
-        .select("*")
-        .eq("category", "agent_message")
-        .not("metadata->>to_agent", "in", `(${directIds.map((id) => `"${id}"`).join(",")})`)
+      excludeRead(
+        db
+          .from("agent_space")
+          .select(MESSAGE_COLUMNS)
+          .eq("category", "agent_message")
+          .not("metadata->>to_agent", "in", `(${directIds.map((id) => `"${id}"`).join(",")})`),
+        directIds,
+      )
         .order("created_at", { ascending: false })
         .limit(message_limit),
 
@@ -272,14 +299,46 @@ serve(async (req) => {
         .from("org_plugin_installations")
         .select("plugin_slug, status, config, activated_at")
         .eq("org_id", org_id),
+
+      // 11. User profile — by user_id or user_email (best-effort; users table may not exist
+      //     in legacy installs). Returns at most one row; the most recently updated wins.
+      (() => {
+        if (!user_id && !user_email) {
+          return Promise.resolve({ data: null, error: null });
+        }
+        let q = db
+          .from("users")
+          .select("id, email, display_name, preferred_language, agent_preferences, updated_at")
+          .eq("org_id", org_id);
+        if (user_id) {
+          q = q.eq("id", user_id);
+        } else if (user_email) {
+          q = q.eq("email", user_email);
+        }
+        return q
+          .order("updated_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+      })(),
     ]);
 
     // ── Process results ─────────────────────────────────────────────────────
 
     if (instructionsResult.error) throw instructionsResult.error;
     if (filesResult.error) throw filesResult.error;
+
+    // Drop the probe row (see query 2) and report truncation rather than
+    // letting a partial file set look complete.
+    const fileRows = (filesResult.data ?? []) as any[];
+    const hasMoreFiles = fileRows.length > file_limit;
+    if (hasMoreFiles) fileRows.length = file_limit;
     if (presenceResult.error) throw presenceResult.error;
     if (directMsgsResult.error) throw directMsgsResult.error;
+
+    // Drop the probe row (see query 5) and remember whether it was there.
+    const directRows = (directMsgsResult.data ?? []) as any[];
+    const hasMoreDirect = directRows.length > direct_limit;
+    if (hasMoreDirect) directRows.length = direct_limit;
     if (otherMsgsResult.error) throw otherMsgsResult.error;
 
     // Extract presence state
@@ -304,7 +363,7 @@ serve(async (req) => {
     // Merge and deduplicate messages
     const seen = new Set<string>();
     const allMsgs = [
-      ...(directMsgsResult.data ?? []),
+      ...directRows,
       ...(otherMsgsResult.data ?? []),
     ].filter((m: Record<string, unknown>) => {
       if (seen.has(m.id as string)) return false;
@@ -402,18 +461,44 @@ serve(async (req) => {
       : state;
     const boot = buildBootSummary(effectiveId, project, scored.length, priorState, online);
 
-    return json({
+    // User profile — silent when missing, empty, or table unavailable
+    const userProfileRow = userProfileResult?.error
+      ? null
+      : (userProfileResult?.data as Record<string, unknown> | null);
+    const userProfile = (() => {
+      if (!userProfileRow) return null;
+      const prefs = (userProfileRow.agent_preferences ?? {}) as Record<string, unknown>;
+      if (!prefs || Object.keys(prefs).length === 0) return null;
+      return {
+        user_id: userProfileRow.id,
+        email: userProfileRow.email,
+        display_name: userProfileRow.display_name,
+        preferred_language: userProfileRow.preferred_language,
+        agent_preferences: prefs,
+        updated_at: userProfileRow.updated_at,
+      };
+    })();
+
+    const response: Record<string, unknown> = {
       agent_id: effectiveId,
       instructions: instructionsResult.data ?? [],
       skills: skillsResult.data ?? [],
-      files: filesResult.data ?? [],
+      files: fileRows,
+      has_more_files: hasMoreFiles,
       messages: scored,
+      // True when this agent has more unread direct messages than the boot
+      // payload carries. Never let a capped inbox look like an empty one.
+      has_more_direct: hasMoreDirect,
       state,
       online,
       protocol: protocolPayload,
       boot,
       active_plugins: activePlugins,
-    });
+    };
+    if (userProfile) {
+      response.user_profile = userProfile;
+    }
+    return json(response);
   } catch (e) {
     console.error(e);
     const msg = e instanceof Error

@@ -284,11 +284,41 @@ async function claimMessage(messageId) {
   });
 }
 
-async function checkUnread() {
-  return postToDesignSpace({
+// Incremental inbox check.
+//
+// This used to fetch the entire inbox, vectors and all, on startup and again on
+// every realtime reconnect. A flapping connection therefore re-downloaded the
+// whole history every 30 seconds — the reconnect path was the expensive one, not
+// the startup path. Two guards:
+//   `since`  — ask only for what arrived after the last successful check
+//   the floor — refuse to call more often than CHECK_FLOOR_MS regardless of caller
+// Pass { force: true } for a genuine cold start, which still honours `since`.
+const CHECK_FLOOR_MS = Number(process.env.DESIGN_SPACE_CHECK_FLOOR_MS || 60000);
+let lastCheckAt = 0;
+let lastCheckedCursor = null;
+
+async function checkUnread({ force = false } = {}) {
+  const now = Date.now();
+  if (!force && now - lastCheckAt < CHECK_FLOOR_MS) {
+    return null;
+  }
+  lastCheckAt = now;
+
+  const result = await postToDesignSpace({
     action: 'check',
     agent_id: `ds-${MACHINE}`,
+    limit: 20,
+    direct_limit: 50,
+    preview: true,
+    since: lastCheckedCursor,
   });
+
+  // Advance the cursor only on a response that came back.
+  if (result && result.checked_at) lastCheckedCursor = result.checked_at;
+  if (result && result.has_more_direct) {
+    log(`Inbox truncated — more direct messages remain (next offset ${result.next_direct_offset})`);
+  }
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -634,7 +664,7 @@ tg(`*${MACHINE} online* — Design Space is listening.`);
 // Check for messages that arrived while offline
 (async () => {
   try {
-    const result = await checkUnread();
+    const result = await checkUnread({ force: true });
     if (result && result.messages && result.messages.length > 0) {
       const directed = result.messages.filter(m => {
         const meta = m.metadata || {};

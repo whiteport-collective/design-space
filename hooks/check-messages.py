@@ -9,6 +9,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import urllib.request
 from pathlib import Path
 
@@ -19,9 +20,45 @@ sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 SUPABASE_URL = os.environ.get("DESIGN_SPACE_URL", "https://uztngidbpduyodrabokm.supabase.co")
 SUPABASE_KEY = os.environ.get("DESIGN_SPACE_ANON_KEY")
 if not SUPABASE_KEY:
-    # Hook must never block tool execution — exit silently if unconfigured
+    # Surface clearly to the agent so it can prompt the user, instead of failing silently.
+    # Use a session-counter sentinel so we surface this once per session, not on every tool call.
+    sentinel = Path(tempfile.gettempdir()) / "design-space" / "missing-key-warned.flag"
+    sentinel.parent.mkdir(parents=True, exist_ok=True)
+    if not sentinel.exists():
+        sentinel.write_text("warned", encoding="utf-8")
+        print(json.dumps({
+            "hookSpecificOutput": {
+                "hookEventName": "PostToolUse",
+                "additionalContext": (
+                    "[AGENT INBOX HOOK DISABLED] DESIGN_SPACE_ANON_KEY env var is missing — "
+                    "agent-message inbox checks are NOT running, so handoffs from other agents "
+                    "(codex, freya, saga, wera) will not surface automatically. "
+                    "Ask the user to either: (a) add the key to ~/.claude/settings.json env section "
+                    "and restart Claude Code, or (b) provide it via Bitwarden so it can be set for the session. "
+                    "Until then, you must fall back to manual `check`-action polling against the agent-messages edge function."
+                )
+            }
+        }))
     sys.exit(0)
 WRAP_WARNING_THRESHOLD = 40
+
+# This hook runs after EVERY tool call. Before 2026-09-21 that meant one full
+# inbox download per tool call — the single largest source of the 15,25 GB
+# egress incident (see EGRESS-INCIDENT-2026-09-18.md). Three things keep it
+# cheap now, and all three matter:
+#   1. a floor on how often it may call at all (below),
+#   2. `since`, so a call fetches only what arrived since the last one,
+#   3. `preview`, so content arrives truncated — this hook only ever
+#      displays 200 characters per message anyway.
+# Override the floor with DESIGN_SPACE_CHECK_INTERVAL (seconds); 0 disables it.
+try:
+    MIN_CHECK_INTERVAL = int(os.environ.get("DESIGN_SPACE_CHECK_INTERVAL", "60"))
+except ValueError:
+    MIN_CHECK_INTERVAL = 60
+
+# How much of each message this hook needs to render its one-line summary.
+# The server truncates to this before sending; we print what we receive.
+PREVIEW_CHARS = 140
 
 
 def session_counter_path(session_id):
@@ -51,12 +88,56 @@ def increment_tool_count(session_id):
     return count, warning
 
 
-def fetch_messages(agent_id, agent_project):
+def cursor_path(session_id):
+    return session_counter_path(session_id).parent / f"{session_id}-cursor.json"
+
+
+def read_cursor(session_id):
+    """Last successful check: when it happened and how far it got.
+
+    `since` is the server's checked_at from the previous response, so the next
+    call asks only for what arrived after it. It is advanced ONLY on a
+    successful fetch — a failed call must not skip the window it missed.
+    """
+    path = cursor_path(session_id)
+    if not path.exists():
+        return {"last_check_at": 0.0, "since": None}
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"last_check_at": 0.0, "since": None}
+    return {
+        "last_check_at": float(state.get("last_check_at", 0.0) or 0.0),
+        "since": state.get("since") or None,
+    }
+
+
+def write_cursor(session_id, last_check_at, since):
+    try:
+        cursor_path(session_id).write_text(
+            json.dumps({"last_check_at": last_check_at, "since": since}),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+
+def fetch_messages(agent_id, agent_project, since=None):
     payload = {
         "action": "check",
         "agent_id": agent_id,
-        "limit": 50,
+        # Phase 2 (broadcasts) — this hook surfaces headlines, not a mailbox.
+        "limit": 20,
+        # Phase 1 (direct) is capped server-side too; direct messages are never
+        # silently dropped, the response carries has_more_direct when it truncates.
+        "direct_limit": 50,
+        # Truncate content server-side. We print 200 chars; there is no reason
+        # to move the other 3 000 across the wire on every tool call.
+        "preview": True,
+        "preview_chars": PREVIEW_CHARS,
     }
+    if since:
+        payload["since"] = since
     if agent_project:
         payload["project"] = agent_project
     # Pass repo + user_id for three-node handoff routing
@@ -96,10 +177,30 @@ def check_messages():
     session_id = hook_input.get("session_id") or f"{agent_id}-default"
     _, session_warning = increment_tool_count(session_id)
 
+    # Rate floor: this hook fires after every tool call, but the inbox does not
+    # change that fast. Inside the floor we skip the network entirely and still
+    # let a pending session warning through.
+    cursor = read_cursor(session_id)
+    now = time.time()
+    if MIN_CHECK_INTERVAL > 0 and (now - cursor["last_check_at"]) < MIN_CHECK_INTERVAL:
+        if session_warning:
+            print(json.dumps({
+                "hookSpecificOutput": {
+                    "hookEventName": "PostToolUse",
+                    "additionalContext": session_warning,
+                }
+            }))
+        return
+
     try:
-        data = fetch_messages(agent_id, agent_project)
+        data = fetch_messages(agent_id, agent_project, since=cursor["since"])
+        # Advance the cursor only after a call that actually returned.
+        write_cursor(session_id, now, data.get("checked_at") or cursor["since"])
     except Exception:
         data = {}
+        # Still record the attempt so a hard-down Agent Space cannot turn every
+        # tool call into a blocking 3-second timeout.
+        write_cursor(session_id, now, cursor["since"])
 
     messages = data.get("messages", [])
     if not messages and not session_warning:
@@ -136,12 +237,21 @@ def check_messages():
     if session_warning:
         lines.append(session_warning)
 
+    # Phase 1 is capped now. If the cap was hit, say so — a direct message that
+    # is merely paginated away must never look like a direct message that does
+    # not exist. The agent can fetch the rest with direct_offset.
+    if data.get("has_more_direct"):
+        lines.append(
+            "[INBOX TRUNCATED] Fler direktmeddelanden finns an som visas. "
+            f"Hamta resten med action=check, direct_offset={data.get('next_direct_offset')}."
+        )
+
     for msg in new_messages:
         meta = msg.get("metadata", {})
         from_agent = meta.get("from_agent", "unknown")
         signal = msg.get("signal", "available")
         prefix = signal_labels.get(signal, "FYI")
-        content = msg.get("content", "")[:200]
+        content = msg.get("content", "")[:PREVIEW_CHARS]
         lines.append(f"[{prefix}] from {from_agent}: {content}")
 
     if not lines:
